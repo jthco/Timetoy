@@ -1,9 +1,9 @@
 // ============================================================
 // Timetoy
 // File: GLRenderer.java
-// Version: v0.6.18
-// Build: Live Freeze Texture
-// Date: 2026-08-04
+// Version: v0.6.23
+// Build: Standard Controls + Watermark + Mode Isolation
+// Date: 2026-08-06
 // ============================================================
 
 package com.jth.smm;
@@ -28,6 +28,48 @@ public class GLRenderer implements GLSurfaceView.Renderer {
     final int[] pendingCaptureFrame = {-1, -1};
     final Runnable[] pendingCaptureCallbacks = new Runnable[2];
     int reverseFboId;
+
+    static final int MAX_DUBBUF_FRAMES = 96;
+    final int[][] dubBufTexIds = new int[2][MAX_DUBBUF_FRAMES];
+    final SimpleTextureSource[][] dubBufSources = new SimpleTextureSource[2][MAX_DUBBUF_FRAMES];
+    int dubBufFrames = 96;
+    int dubBufWritePage = 0;
+    int dubBufReadPage = 1;
+    int dubBufWriteIndex = 0;
+    int dubBufPlayIndex = -1; // output tick index; each captured frame is shown twice
+    boolean dubBufEnabled = false;
+    boolean dubBufReadReady = false;
+    boolean dubBufWriteReady = false;
+    boolean dubBufFirstPlaybackReported = false;
+    long dubBufLastCameraTimestampNs = -1L;
+    int dubBufPlayCycle = -1;
+    int dubBufRecordCycle = 1;
+
+    // Camera2 preview arrives in sensor orientation. Apply this once at the
+    // camera source so live preview and every effect inherit the same image.
+    static final float CAMERA_TEXTURE_ROTATION_DEGREES = -90.0f;
+    final float[] rawCameraMatrix = new float[16];
+    final float[] cameraCorrectionMatrix = new float[16];
+
+    // Stutter is the first circular-history effect. Recording never pauses.
+    static final int HISTORY_WIDTH = 1280;
+    static final int HISTORY_HEIGHT = 720;
+    static final int HISTORY_FPS = 60;
+    static final int HISTORY_FRAMES = 120;       // two seconds
+    int stutterTimeMs = 800;
+    int stutterSlices = 4;
+    final int[] historyTexIds = new int[HISTORY_FRAMES];
+    final SimpleTextureSource[] historySources = new SimpleTextureSource[HISTORY_FRAMES];
+    long historyNewestSequence = -1L;
+    int historyCount = 0;
+    long historyLastCameraTimestampNs = -1L;
+    boolean historyEnabled = false;
+    boolean stutterEnabled = false;
+    boolean stutterFirstPlaybackReported = false;
+    int stutterOutputIndex = 0;
+    int stutterCycle = 0;
+    long stutterAnchorNewestSequence = -1L;
+
 
     int freezeTexId;
     int freezeWidth;
@@ -69,6 +111,11 @@ public class GLRenderer implements GLSurfaceView.Renderer {
         tex2dProgram = makeProgram(VERT, FRAG_2D);
         cameraTexId = makeExternalTexture();
         cameraSource = new SimpleTextureSource(cameraTexId, GL_TEXTURE_EXTERNAL_OES);
+        android.opengl.Matrix.setIdentityM(cameraCorrectionMatrix, 0);
+        android.opengl.Matrix.translateM(cameraCorrectionMatrix, 0, 0.5f, 0.5f, 0f);
+        android.opengl.Matrix.rotateM(cameraCorrectionMatrix, 0,
+                CAMERA_TEXTURE_ROTATION_DEGREES, 0f, 0f, 1f);
+        android.opengl.Matrix.translateM(cameraCorrectionMatrix, 0, -0.5f, -0.5f, 0f);
         currentSource = cameraSource;
         cameraSurfaceTexture = new SurfaceTexture(cameraTexId);
         cameraSurfaceTexture.setOnFrameAvailableListener(st -> view.queueEvent(this::onCameraFrameAvailable));
@@ -116,8 +163,12 @@ public class GLRenderer implements GLSurfaceView.Renderer {
     void onCameraFrameAvailable() {
         try {
             cameraSurfaceTexture.updateTexImage();
-            cameraSurfaceTexture.getTransformMatrix(cameraSource.matrix);
+            cameraSurfaceTexture.getTransformMatrix(rawCameraMatrix);
+            android.opengl.Matrix.multiplyMM(cameraSource.matrix, 0,
+                    rawCameraMatrix, 0, cameraCorrectionMatrix, 0);
             cameraFrameCount++;
+            if (dubBufEnabled) captureCameraFrameToDubBuf();
+            if (historyEnabled) captureCameraFrameToHistory();
         } catch (Exception e) {
             android.util.Log.e("SlowMo240", "camera updateTexImage error: " + e);
         }
@@ -256,6 +307,231 @@ public class GLRenderer implements GLSurfaceView.Renderer {
         reverseBankCounts[slot]=0; pendingCaptureFrame[slot]=-1; pendingCaptureCallbacks[slot]=null;
     }
 
+
+    public void beginDubBufReverse(int playbackMs) {
+        releaseDubBufReverse();
+        // The S25 preview-only path delivers about 30 unique frames/s even when
+        // requested at 60. Capture 24 source frames per playback second and
+        // show each source frame twice at the 48 Hz display cadence.
+        dubBufFrames = Math.max(12, Math.min(MAX_DUBBUF_FRAMES, playbackMs * 24 / 1000));
+        for (int page = 0; page < 2; page++) {
+            for (int i = 0; i < dubBufFrames; i++) {
+                int id = make2dTexture();
+                dubBufTexIds[page][i] = id;
+                dubBufSources[page][i] = new SimpleTextureSource(id, GLES20.GL_TEXTURE_2D);
+                android.opengl.Matrix.setIdentityM(dubBufSources[page][i].matrix, 0);
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, id);
+                GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA,
+                        1280, 720, 0, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null);
+            }
+        }
+        dubBufWritePage = 0; dubBufReadPage = 1; dubBufWriteIndex = 0;
+        dubBufPlayIndex = -1; dubBufReadReady = false; dubBufWriteReady = false; dubBufEnabled = true;
+        dubBufFirstPlaybackReported = false; dubBufLastCameraTimestampNs = -1L;
+        dubBufPlayCycle = -1; dubBufRecordCycle = 1;
+        showCameraOutput();
+        TraceLog.i("DubBuf allocated frames=" + dubBufFrames + " size=1280x720");
+    }
+
+    private void captureCameraFrameToDubBuf() {
+        long ts = cameraSurfaceTexture.getTimestamp();
+        if (ts == dubBufLastCameraTimestampNs) return;
+        dubBufLastCameraTimestampNs = ts;
+        if (dubBufWriteReady || dubBufWriteIndex >= dubBufFrames) return;
+        int texId = dubBufTexIds[dubBufWritePage][dubBufWriteIndex];
+        if (texId == 0) return;
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, reverseFboId);
+        GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0,
+                GLES20.GL_TEXTURE_2D, texId, 0);
+        GLES20.glViewport(0, 0, 1280, 720);
+        drawTextureWithGain(cameraSource, 1.0f);
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0);
+        GLES20.glViewport(0, 0, screenW, screenH);
+        dubBufWriteIndex++;
+        if (dubBufWriteIndex >= dubBufFrames) {
+            if (!dubBufReadReady) {
+                int oldRead = dubBufReadPage;
+                dubBufReadPage = dubBufWritePage;
+                dubBufWritePage = oldRead;
+                dubBufWriteIndex = 0;
+                dubBufReadReady = true;
+                dubBufPlayIndex = dubBufFrames * 2 - 1;
+                dubBufPlayCycle = 1;
+                dubBufRecordCycle = 2;
+                TraceLog.i("DubBuf first page ready read=" + dubBufReadPage +
+                        " write=" + dubBufWritePage + " playCycle=" + dubBufPlayCycle +
+                        " recordCycle=" + dubBufRecordCycle);
+            } else {
+                dubBufWriteReady = true;
+                TraceLog.i("DubBuf next page ready page=" + dubBufWritePage);
+            }
+        }
+    }
+
+    public boolean advanceDubBufPlayback() {
+        if (!dubBufEnabled || !dubBufReadReady || dubBufPlayIndex < 0) return false;
+        int sourceIndex = dubBufPlayIndex / 2;
+        currentSource = dubBufSources[dubBufReadPage][sourceIndex];
+        dubBufPlayIndex--;
+        visibleDecoderSlot = -3;
+        boolean first = !dubBufFirstPlaybackReported;
+        dubBufFirstPlaybackReported = true;
+        if (dubBufPlayIndex < 0) {
+            if (dubBufWriteReady) {
+                int oldRead = dubBufReadPage;
+                dubBufReadPage = dubBufWritePage;
+                dubBufWritePage = oldRead;
+                dubBufWriteIndex = 0;
+                dubBufWriteReady = false;
+                dubBufPlayIndex = dubBufFrames * 2 - 1;
+                dubBufPlayCycle = dubBufRecordCycle;
+                dubBufRecordCycle = dubBufPlayCycle + 1;
+                TraceLog.i("DubBuf swap read=" + dubBufReadPage + " write=" + dubBufWritePage +
+                        " playCycle=" + dubBufPlayCycle + " recordCycle=" + dubBufRecordCycle);
+            } else {
+                dubBufPlayIndex = dubBufFrames * 2 - 1; // emergency repeat only
+                TraceLog.i("DubBuf writer not ready; repeating page writeIndex=" + dubBufWriteIndex);
+            }
+        }
+        return first;
+    }
+
+    public void releaseDubBufReverse() {
+        dubBufEnabled = false;
+        for (int p = 0; p < 2; p++) {
+            int[] ids = new int[MAX_DUBBUF_FRAMES]; int n = 0;
+            for (int i = 0; i < MAX_DUBBUF_FRAMES; i++) {
+                if (dubBufTexIds[p][i] != 0) ids[n++] = dubBufTexIds[p][i];
+                dubBufTexIds[p][i] = 0; dubBufSources[p][i] = null;
+            }
+            if (n > 0) GLES20.glDeleteTextures(n, ids, 0);
+        }
+        dubBufPlayCycle = -1;
+        dubBufRecordCycle = -1;
+        if (visibleDecoderSlot == -3) showCameraOutput();
+    }
+
+    public int getDubBufPlayCycle() { return dubBufPlayCycle; }
+    public int getDubBufRecordCycle() { return dubBufRecordCycle; }
+
+    public void beginStutter() {
+        releaseStutterHistory();
+        for (int i = 0; i < HISTORY_FRAMES; i++) {
+            int id = make2dTexture();
+            historyTexIds[i] = id;
+            historySources[i] = new SimpleTextureSource(id, GLES20.GL_TEXTURE_2D);
+            android.opengl.Matrix.setIdentityM(historySources[i].matrix, 0);
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, id);
+            GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA,
+                    HISTORY_WIDTH, HISTORY_HEIGHT, 0, GLES20.GL_RGBA,
+                    GLES20.GL_UNSIGNED_BYTE, null);
+        }
+        historyNewestSequence = -1L;
+        historyCount = 0;
+        historyLastCameraTimestampNs = -1L;
+        historyEnabled = true;
+        stutterEnabled = true;
+        stutterFirstPlaybackReported = false;
+        stutterOutputIndex = 0;
+        stutterCycle = 0;
+        stutterAnchorNewestSequence = -1L;
+        showCameraOutput();
+        TraceLog.i("Stutter history allocated frames=" + HISTORY_FRAMES +
+                " size=" + HISTORY_WIDTH + "x" + HISTORY_HEIGHT);
+    }
+
+    private void captureCameraFrameToHistory() {
+        long ts = cameraSurfaceTexture.getTimestamp();
+        if (ts == historyLastCameraTimestampNs) return;
+        historyLastCameraTimestampNs = ts;
+
+        long sequence = historyNewestSequence + 1L;
+        int slot = (int) (sequence % HISTORY_FRAMES);
+        int texId = historyTexIds[slot];
+        if (texId == 0) return;
+
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, reverseFboId);
+        GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER,
+                GLES20.GL_COLOR_ATTACHMENT0, GLES20.GL_TEXTURE_2D, texId, 0);
+        int status = GLES20.glCheckFramebufferStatus(GLES20.GL_FRAMEBUFFER);
+        if (status != GLES20.GL_FRAMEBUFFER_COMPLETE) {
+            throw new IllegalStateException("History FBO incomplete 0x" +
+                    Integer.toHexString(status));
+        }
+        GLES20.glViewport(0, 0, HISTORY_WIDTH, HISTORY_HEIGHT);
+        drawTextureWithGain(cameraSource, 1.0f);
+        GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0);
+        GLES20.glViewport(0, 0, screenW, screenH);
+
+        historyNewestSequence = sequence;
+        if (historyCount < HISTORY_FRAMES) historyCount++;
+    }
+
+    public boolean advanceStutterPlayback() {
+        int sliceFrames = Math.max(1, (stutterTimeMs * HISTORY_FPS / 1000) / Math.max(1, stutterSlices));
+        if (!stutterEnabled || historyCount < sliceFrames) return false;
+
+        int pass = stutterOutputIndex / sliceFrames;
+        int frameInSlice = stutterOutputIndex % sliceFrames;
+
+        // Latch one recent slice at the start of each four-pass cycle, then
+        // replay that exact logical range four times while recording continues.
+        if (stutterOutputIndex == 0 || stutterAnchorNewestSequence < 0L) {
+            stutterAnchorNewestSequence = historyNewestSequence;
+        }
+        long sequence = stutterAnchorNewestSequence - sliceFrames + 1L + frameInSlice;
+
+        long oldest = historyNewestSequence - historyCount + 1L;
+        if (sequence < oldest || sequence > historyNewestSequence) return false;
+
+        int slot = (int) (sequence % HISTORY_FRAMES);
+        currentSource = historySources[slot];
+        visibleDecoderSlot = -4;
+        report = "Stutter cycle " + (stutterCycle + 1) + " pass " + (pass + 1);
+
+        boolean first = !stutterFirstPlaybackReported;
+        stutterFirstPlaybackReported = true;
+
+        stutterOutputIndex++;
+        if (stutterOutputIndex >= sliceFrames * stutterSlices) {
+            stutterOutputIndex = 0;
+            stutterAnchorNewestSequence = -1L;
+            stutterCycle++;
+            TraceLog.i("Stutter cycle complete=" + stutterCycle);
+        }
+        return first;
+    }
+
+    public void setStutterTimeMs(int timeMs) {
+        stutterTimeMs = Math.max(200, Math.min(2000, timeMs));
+        stutterOutputIndex = 0; stutterAnchorNewestSequence = -1L;
+        TraceLog.i("Stutter Time=" + stutterTimeMs + "ms");
+    }
+    public void setStutterSlices(int slices) {
+        stutterSlices = Math.max(1, Math.min(12, slices));
+        stutterOutputIndex = 0; stutterAnchorNewestSequence = -1L;
+        TraceLog.i("Stutter Slices=" + stutterSlices);
+    }
+    public int getStutterCycle() { return stutterCycle; }
+
+    public void releaseStutterHistory() {
+        historyEnabled = false;
+        stutterEnabled = false;
+        int[] ids = new int[HISTORY_FRAMES];
+        int n = 0;
+        for (int i = 0; i < HISTORY_FRAMES; i++) {
+            if (historyTexIds[i] != 0) ids[n++] = historyTexIds[i];
+            historyTexIds[i] = 0;
+            historySources[i] = null;
+        }
+        if (n > 0) GLES20.glDeleteTextures(n, ids, 0);
+        historyNewestSequence = -1L;
+        historyCount = 0;
+        stutterOutputIndex = 0;
+        stutterAnchorNewestSequence = -1L;
+        if (visibleDecoderSlot == -4) showCameraOutput();
+    }
+
     public void showDecoderSlot(int slot) {
         if (slot < 0 || slot > 1) throw new IllegalArgumentException("Invalid decoder slot " + slot);
         visibleDecoderSlot = slot; currentSource = decoderSources[slot]; report = "Showing decoder slot " + slot;
@@ -266,6 +542,8 @@ public class GLRenderer implements GLSurfaceView.Renderer {
     }
     public void setPlaybackGain(float gain) { playbackGain = gain; report = "Playback gain " + gain + "x"; }
     public String stateText() {
+        if (visibleDecoderSlot == -4) return "STUTTER";
+        if (visibleDecoderSlot == -3) return "DUBBUF";
         if (visibleDecoderSlot == -2) return "FREEZE";
         if (visibleDecoderSlot < 0) return "LIVE";
         return "PLAYBACK " + visibleDecoderSlot;

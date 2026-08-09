@@ -1,9 +1,9 @@
 // ============================================================
 // Timetoy
 // File: GLView.java
-// Version: v0.6.18
-// Build: Live Freeze Mode
-// Date: 2026-08-04
+// Version: v0.6.23
+// Build: Standard Controls + Watermark + Mode Isolation
+// Date: 2026-08-06
 // ============================================================
 
 package com.jth.smm;
@@ -25,11 +25,50 @@ public class GLView extends GLSurfaceView {
     private final LensPlayer[] players = new LensPlayer[2];
     private final LensMode[] slotModes = new LensMode[2];
 
-    public enum LensMode { REVERSE, SLOW, FREEZE, STUTTER }
+    public enum LensMode { REVERSE, DUBBUF_REVERSE, SLOW, FREEZE, STUTTER }
 
-    private volatile LensMode lensMode = LensMode.REVERSE;
+    private volatile LensMode lensMode = LensMode.DUBBUF_REVERSE;
     private final boolean[] waitingForFirstTexture = new boolean[2];
     private final Runnable[] firstTextureCallbacks = new Runnable[2];
+
+    private final Handler dubBufHandler = new Handler(Looper.getMainLooper());
+    private volatile boolean dubBufRunning = false;
+    private volatile int dubBufPlaybackMs = 2000;
+    private volatile Runnable dubBufFirstPlayback;
+    private final Runnable dubBufTick = new Runnable() {
+        @Override public void run() {
+            if (!dubBufRunning || lensMode != LensMode.DUBBUF_REVERSE) return;
+            queueEvent(() -> {
+                boolean first = renderer.advanceDubBufPlayback();
+                requestRender();
+                if (first && dubBufFirstPlayback != null) {
+                    Runnable r = dubBufFirstPlayback;
+                    dubBufFirstPlayback = null;
+                    post(r);
+                }
+            });
+            dubBufHandler.postDelayed(this, 1000L / 48L);
+        }
+    };
+
+    private final Handler stutterHandler = new Handler(Looper.getMainLooper());
+    private volatile boolean stutterRunning = false;
+    private volatile Runnable stutterFirstPlayback;
+    private final Runnable stutterTick = new Runnable() {
+        @Override public void run() {
+            if (!stutterRunning || lensMode != LensMode.STUTTER) return;
+            queueEvent(() -> {
+                boolean first = renderer.advanceStutterPlayback();
+                requestRender();
+                if (first && stutterFirstPlayback != null) {
+                    Runnable r = stutterFirstPlayback;
+                    stutterFirstPlayback = null;
+                    post(r);
+                }
+            });
+            stutterHandler.postDelayed(this, 1000L / 60L);
+        }
+    };
 
     private final Handler freezeHandler = new Handler(Looper.getMainLooper());
     private volatile boolean freezeRunning = false;
@@ -62,6 +101,8 @@ public class GLView extends GLSurfaceView {
     public void setLensMode(LensMode mode) {
         if (mode == null) throw new IllegalArgumentException("mode is null");
         if (mode != LensMode.FREEZE) stopFreeze();
+        if (mode != LensMode.DUBBUF_REVERSE) stopDubBufReverse();
+        if (mode != LensMode.STUTTER) stopStutter();
         lensMode = mode;
         TraceLog.i("Lens mode=" + mode);
     }
@@ -74,8 +115,65 @@ public class GLView extends GLSurfaceView {
         queueEvent(() -> renderer.setPlaybackGain(gain));
     }
 
+
+    public void startDubBufReverse(int playbackMs, Runnable onFirstPlayback) {
+        stopFreeze();
+        stopStutter();
+        releaseAllPlayers();
+        lensMode = LensMode.DUBBUF_REVERSE;
+        dubBufPlaybackMs = playbackMs;
+        dubBufFirstPlayback = onFirstPlayback;
+        dubBufRunning = true;
+        dubBufHandler.removeCallbacks(dubBufTick);
+        queueEvent(() -> {
+            renderer.beginDubBufReverse(playbackMs);
+            requestRender();
+        });
+        dubBufHandler.post(dubBufTick);
+        TraceLog.i("Reverse started playbackMs=" + playbackMs);
+    }
+
+    public void stopDubBufReverse() {
+        dubBufRunning = false;
+        dubBufHandler.removeCallbacks(dubBufTick);
+        dubBufFirstPlayback = null;
+        if (renderer != null) queueEvent(() -> renderer.releaseDubBufReverse());
+    }
+
+    public void startStutter(Runnable onFirstPlayback) {
+        stopFreeze();
+        stopDubBufReverse();
+        releaseAllPlayers();
+        lensMode = LensMode.STUTTER;
+        stutterFirstPlayback = onFirstPlayback;
+        stutterRunning = true;
+        stutterHandler.removeCallbacks(stutterTick);
+        queueEvent(() -> {
+            renderer.beginStutter();
+            requestRender();
+        });
+        stutterHandler.post(stutterTick);
+        TraceLog.i("Stutter started sliceMs=200 passes=4 historyMs=2000");
+    }
+
+    public void setStutterTimeMs(int timeMs) {
+        if (renderer != null) queueEvent(() -> renderer.setStutterTimeMs(timeMs));
+    }
+    public void setStutterSlices(int slices) {
+        if (renderer != null) queueEvent(() -> renderer.setStutterSlices(slices));
+    }
+
+    public void stopStutter() {
+        stutterRunning = false;
+        stutterHandler.removeCallbacks(stutterTick);
+        stutterFirstPlayback = null;
+        if (renderer != null) queueEvent(() -> renderer.releaseStutterHistory());
+    }
+
     public void startFreeze(float frequencyHz) {
         setFreezeFrequency(frequencyHz);
+        stopDubBufReverse();
+        stopStutter();
         releaseAllPlayers();
         lensMode = LensMode.FREEZE;
         freezeRunning = true;
