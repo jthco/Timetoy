@@ -1,9 +1,9 @@
 // ============================================================
 // Timetoy
 // File: GLRenderer.java
-// Version: v0.6.23
-// Build: Standard Controls + Watermark + Mode Isolation
-// Date: 2026-08-06
+// Version: v0.6.24
+// Build: Fast View + 48 Hz Reverse + Measured Preview FPS
+// Date: 2026-08-09
 // ============================================================
 
 package com.jth.smm;
@@ -36,12 +36,13 @@ public class GLRenderer implements GLSurfaceView.Renderer {
     int dubBufWritePage = 0;
     int dubBufReadPage = 1;
     int dubBufWriteIndex = 0;
-    int dubBufPlayIndex = -1; // output tick index; each captured frame is shown twice
+    int dubBufPlayIndex = -1;
     boolean dubBufEnabled = false;
     boolean dubBufReadReady = false;
     boolean dubBufWriteReady = false;
     boolean dubBufFirstPlaybackReported = false;
     long dubBufLastCameraTimestampNs = -1L;
+    long dubBufNextCaptureTimestampNs = -1L;
     int dubBufPlayCycle = -1;
     int dubBufRecordCycle = 1;
 
@@ -69,6 +70,13 @@ public class GLRenderer implements GLSurfaceView.Renderer {
     int stutterOutputIndex = 0;
     int stutterCycle = 0;
     long stutterAnchorNewestSequence = -1L;
+    boolean fastEnabled = false;
+    boolean fastFirstPlaybackReported = false;
+    int fastTimeMs = 1000;
+    float fastSpeed = 2.0f;
+    int fastOutputIndex = 0;
+    int fastCycle = 0;
+    long fastAnchorNewestSequence = -1L;
 
 
     int freezeTexId;
@@ -88,6 +96,9 @@ public class GLRenderer implements GLSurfaceView.Renderer {
     int drawCount = 0, cameraFrameCount = 0;
     final int[] decoderFrameCounts = new int[2];
     long startNs = 0, lastDrawNs = 0;
+    long cameraFpsWindowStartNs = 0L;
+    int cameraFpsWindowFrames = 0;
+    volatile double measuredCameraFps = 0.0;
     volatile long maxDrawGapNs = 0;
     String report = "Ready";
 
@@ -167,6 +178,16 @@ public class GLRenderer implements GLSurfaceView.Renderer {
             android.opengl.Matrix.multiplyMM(cameraSource.matrix, 0,
                     rawCameraMatrix, 0, cameraCorrectionMatrix, 0);
             cameraFrameCount++;
+            long fpsNow = System.nanoTime();
+            if (cameraFpsWindowStartNs == 0L) cameraFpsWindowStartNs = fpsNow;
+            cameraFpsWindowFrames++;
+            long fpsSpan = fpsNow - cameraFpsWindowStartNs;
+            if (fpsSpan >= 500_000_000L) {
+                measuredCameraFps =
+                        cameraFpsWindowFrames * 1_000_000_000.0 / fpsSpan;
+                cameraFpsWindowStartNs = fpsNow;
+                cameraFpsWindowFrames = 0;
+            }
             if (dubBufEnabled) captureCameraFrameToDubBuf();
             if (historyEnabled) captureCameraFrameToHistory();
         } catch (Exception e) {
@@ -310,10 +331,10 @@ public class GLRenderer implements GLSurfaceView.Renderer {
 
     public void beginDubBufReverse(int playbackMs) {
         releaseDubBufReverse();
-        // The S25 preview-only path delivers about 30 unique frames/s even when
-        // requested at 60. Capture 24 source frames per playback second and
-        // show each source frame twice at the 48 Hz display cadence.
-        dubBufFrames = Math.max(12, Math.min(MAX_DUBBUF_FRAMES, playbackMs * 24 / 1000));
+        // Reverse targets 48 unique source frames/s. Sample the preview
+        // timestamp stream toward 48 Hz and display each captured frame once.
+        dubBufFrames = Math.max(24,
+                Math.min(MAX_DUBBUF_FRAMES, playbackMs * 48 / 1000));
         for (int page = 0; page < 2; page++) {
             for (int i = 0; i < dubBufFrames; i++) {
                 int id = make2dTexture();
@@ -328,6 +349,7 @@ public class GLRenderer implements GLSurfaceView.Renderer {
         dubBufWritePage = 0; dubBufReadPage = 1; dubBufWriteIndex = 0;
         dubBufPlayIndex = -1; dubBufReadReady = false; dubBufWriteReady = false; dubBufEnabled = true;
         dubBufFirstPlaybackReported = false; dubBufLastCameraTimestampNs = -1L;
+        dubBufNextCaptureTimestampNs = -1L;
         dubBufPlayCycle = -1; dubBufRecordCycle = 1;
         showCameraOutput();
         TraceLog.i("DubBuf allocated frames=" + dubBufFrames + " size=1280x720");
@@ -337,6 +359,13 @@ public class GLRenderer implements GLSurfaceView.Renderer {
         long ts = cameraSurfaceTexture.getTimestamp();
         if (ts == dubBufLastCameraTimestampNs) return;
         dubBufLastCameraTimestampNs = ts;
+        final long intervalNs = 1_000_000_000L / 48L;
+        if (dubBufNextCaptureTimestampNs < 0L)
+            dubBufNextCaptureTimestampNs = ts;
+        if (ts < dubBufNextCaptureTimestampNs) return;
+        do {
+            dubBufNextCaptureTimestampNs += intervalNs;
+        } while (dubBufNextCaptureTimestampNs <= ts);
         if (dubBufWriteReady || dubBufWriteIndex >= dubBufFrames) return;
         int texId = dubBufTexIds[dubBufWritePage][dubBufWriteIndex];
         if (texId == 0) return;
@@ -355,7 +384,7 @@ public class GLRenderer implements GLSurfaceView.Renderer {
                 dubBufWritePage = oldRead;
                 dubBufWriteIndex = 0;
                 dubBufReadReady = true;
-                dubBufPlayIndex = dubBufFrames * 2 - 1;
+                dubBufPlayIndex = dubBufFrames - 1;
                 dubBufPlayCycle = 1;
                 dubBufRecordCycle = 2;
                 TraceLog.i("DubBuf first page ready read=" + dubBufReadPage +
@@ -370,7 +399,7 @@ public class GLRenderer implements GLSurfaceView.Renderer {
 
     public boolean advanceDubBufPlayback() {
         if (!dubBufEnabled || !dubBufReadReady || dubBufPlayIndex < 0) return false;
-        int sourceIndex = dubBufPlayIndex / 2;
+        int sourceIndex = dubBufPlayIndex;
         currentSource = dubBufSources[dubBufReadPage][sourceIndex];
         dubBufPlayIndex--;
         visibleDecoderSlot = -3;
@@ -383,13 +412,13 @@ public class GLRenderer implements GLSurfaceView.Renderer {
                 dubBufWritePage = oldRead;
                 dubBufWriteIndex = 0;
                 dubBufWriteReady = false;
-                dubBufPlayIndex = dubBufFrames * 2 - 1;
+                dubBufPlayIndex = dubBufFrames - 1;
                 dubBufPlayCycle = dubBufRecordCycle;
                 dubBufRecordCycle = dubBufPlayCycle + 1;
                 TraceLog.i("DubBuf swap read=" + dubBufReadPage + " write=" + dubBufWritePage +
                         " playCycle=" + dubBufPlayCycle + " recordCycle=" + dubBufRecordCycle);
             } else {
-                dubBufPlayIndex = dubBufFrames * 2 - 1; // emergency repeat only
+                dubBufPlayIndex = dubBufFrames - 1; // emergency repeat only
                 TraceLog.i("DubBuf writer not ready; repeating page writeIndex=" + dubBufWriteIndex);
             }
         }
@@ -468,8 +497,9 @@ public class GLRenderer implements GLSurfaceView.Renderer {
     }
 
     public boolean advanceStutterPlayback() {
-        int sliceFrames = Math.max(1, (stutterTimeMs * HISTORY_FPS / 1000) / Math.max(1, stutterSlices));
-        if (!stutterEnabled || historyCount < sliceFrames) return false;
+        int sliceFrames = Math.max(1,
+                (stutterTimeMs * HISTORY_FPS / 1000) / Math.max(1, stutterSlices));
+        if (!stutterEnabled || historyCount < sliceFrames * 2) return false;
 
         int pass = stutterOutputIndex / sliceFrames;
         int frameInSlice = stutterOutputIndex % sliceFrames;
@@ -479,7 +509,10 @@ public class GLRenderer implements GLSurfaceView.Renderer {
         if (stutterOutputIndex == 0 || stutterAnchorNewestSequence < 0L) {
             stutterAnchorNewestSequence = historyNewestSequence;
         }
-        long sequence = stutterAnchorNewestSequence - sliceFrames + 1L + frameInSlice;
+        // Start one full slice farther back. The previous implementation's
+        // first pass was one slice too close to live.
+        long sequence = stutterAnchorNewestSequence -
+                (2L * sliceFrames) + 1L + frameInSlice;
 
         long oldest = historyNewestSequence - historyCount + 1L;
         if (sequence < oldest || sequence > historyNewestSequence) return false;
@@ -514,9 +547,102 @@ public class GLRenderer implements GLSurfaceView.Renderer {
     }
     public int getStutterCycle() { return stutterCycle; }
 
+
+    public void beginFast() {
+        releaseStutterHistory();
+        for (int i = 0; i < HISTORY_FRAMES; i++) {
+            int id = make2dTexture();
+            historyTexIds[i] = id;
+            historySources[i] =
+                    new SimpleTextureSource(id, GLES20.GL_TEXTURE_2D);
+            android.opengl.Matrix.setIdentityM(historySources[i].matrix, 0);
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, id);
+            GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA,
+                    HISTORY_WIDTH, HISTORY_HEIGHT, 0, GLES20.GL_RGBA,
+                    GLES20.GL_UNSIGNED_BYTE, null);
+        }
+        historyNewestSequence = -1L;
+        historyCount = 0;
+        historyLastCameraTimestampNs = -1L;
+        historyEnabled = true;
+        fastEnabled = true;
+        fastFirstPlaybackReported = false;
+        fastOutputIndex = 0;
+        fastCycle = 0;
+        fastAnchorNewestSequence = -1L;
+        showCameraOutput();
+        TraceLog.i("Fast history allocated frames=" + HISTORY_FRAMES +
+                " size=" + HISTORY_WIDTH + "x" + HISTORY_HEIGHT);
+    }
+
+    public boolean advanceFastPlayback() {
+        if (!fastEnabled) return false;
+        if (fastSpeed <= 1.0001f) {
+            showCameraOutput();
+            boolean first = !fastFirstPlaybackReported;
+            fastFirstPlaybackReported = true;
+            return first;
+        }
+
+        int cycleFrames = Math.max(1,
+                Math.round(fastTimeMs * HISTORY_FPS / 1000.0f));
+        int jumpBackFrames = Math.max(0,
+                Math.round((fastSpeed - 1.0f) * cycleFrames));
+        if (historyCount <= jumpBackFrames + 1) return false;
+
+        if (fastOutputIndex == 0 || fastAnchorNewestSequence < 0L)
+            fastAnchorNewestSequence = historyNewestSequence;
+
+        long sequence = fastAnchorNewestSequence - jumpBackFrames +
+                Math.round(fastOutputIndex * fastSpeed);
+        long oldest = historyNewestSequence - historyCount + 1L;
+        if (sequence < oldest) return false;
+        if (sequence > historyNewestSequence) sequence = historyNewestSequence;
+
+        int slot = (int) (sequence % HISTORY_FRAMES);
+        currentSource = historySources[slot];
+        visibleDecoderSlot = -5;
+        report = "Fast cycle " + (fastCycle + 1) + " " + fastSpeed + "x";
+
+        boolean first = !fastFirstPlaybackReported;
+        fastFirstPlaybackReported = true;
+        fastOutputIndex++;
+        if (fastOutputIndex >= cycleFrames) {
+            fastOutputIndex = 0;
+            fastAnchorNewestSequence = -1L;
+            fastCycle++;
+            TraceLog.i("Fast cycle complete=" + fastCycle);
+        }
+        return first;
+    }
+
+    public void setFastTimeMs(int timeMs) {
+        fastTimeMs = Math.max(100, Math.min(2000, timeMs));
+        if (fastSpeed > 1.0f &&
+                (fastSpeed - 1.0f) * fastTimeMs > 2000.0f)
+            fastSpeed = 1.0f + 2000.0f / fastTimeMs;
+        fastOutputIndex = 0;
+        fastAnchorNewestSequence = -1L;
+        TraceLog.i("Fast Time=" + fastTimeMs + "ms speed=" + fastSpeed);
+    }
+
+    public void setFastSpeed(float speed) {
+        fastSpeed = Math.max(1.0f, Math.min(4.0f, speed));
+        if (fastSpeed > 1.0f &&
+                (fastSpeed - 1.0f) * fastTimeMs > 2000.0f)
+            fastTimeMs = Math.max(100,
+                    Math.round(2000.0f / (fastSpeed - 1.0f)));
+        fastOutputIndex = 0;
+        fastAnchorNewestSequence = -1L;
+        TraceLog.i("Fast Speed=" + fastSpeed + "x timeMs=" + fastTimeMs);
+    }
+
+    public int getFastCycle() { return fastCycle; }
+
     public void releaseStutterHistory() {
         historyEnabled = false;
         stutterEnabled = false;
+        fastEnabled = false;
         int[] ids = new int[HISTORY_FRAMES];
         int n = 0;
         for (int i = 0; i < HISTORY_FRAMES; i++) {
@@ -529,7 +655,10 @@ public class GLRenderer implements GLSurfaceView.Renderer {
         historyCount = 0;
         stutterOutputIndex = 0;
         stutterAnchorNewestSequence = -1L;
-        if (visibleDecoderSlot == -4) showCameraOutput();
+        fastOutputIndex = 0;
+        fastAnchorNewestSequence = -1L;
+        if (visibleDecoderSlot == -4 || visibleDecoderSlot == -5)
+            showCameraOutput();
     }
 
     public void showDecoderSlot(int slot) {
@@ -542,6 +671,7 @@ public class GLRenderer implements GLSurfaceView.Renderer {
     }
     public void setPlaybackGain(float gain) { playbackGain = gain; report = "Playback gain " + gain + "x"; }
     public String stateText() {
+        if (visibleDecoderSlot == -5) return "FAST";
         if (visibleDecoderSlot == -4) return "STUTTER";
         if (visibleDecoderSlot == -3) return "DUBBUF";
         if (visibleDecoderSlot == -2) return "FREEZE";
@@ -549,6 +679,7 @@ public class GLRenderer implements GLSurfaceView.Renderer {
         return "PLAYBACK " + visibleDecoderSlot;
     }
     public long maxDrawGapMs() { return maxDrawGapNs / 1_000_000L; }
+    public double cameraFps() { return measuredCameraFps; }
     public String stats() {
         double elapsed=(lastDrawNs-startNs)/1e9; double drawFps=elapsed>0?drawCount/elapsed:0;
         return "GL draws: "+drawCount+"\nGL draw fps: "+String.format("%.1f",drawFps)+

@@ -1,9 +1,9 @@
 // ============================================================
 // Timetoy
 // File: MainActivity.java
-// Version: v0.6.23
-// Build: Reverse Timing + Slow Cue Events
-// Date: 2026-08-06
+// Version: v0.6.24
+// Build: Fast View + Fixed View HUD + Timing Cleanup
+// Date: 2026-08-09
 // ============================================================
 
 package com.jth.smm;
@@ -37,7 +37,7 @@ public class MainActivity extends Activity {
     static final int SLOW_CAPTURE_FPS = 240;
     static final int REVERSE_CAPTURE_FPS = 120;
     static final String VERSION =
-            "v0.6.23";
+            "v0.6.24";
 
     static final int SLOW_PLAYBACK_FPS = 24;
     static final int SLOW_DECODE_MARGIN_MS = 2100;
@@ -46,7 +46,7 @@ public class MainActivity extends Activity {
     static final int TIMETOY_VIOLET = 0xff7f3fbf;
     static final int TIMETOY_ORANGE = 0xffff7a1a;
     static final int STANDARD_REVERSE_RECORD_MS = 1600;
-    static final int STANDARD_REVERSE_PLAYBACK_MS = 2000;
+    static final int STANDARD_REVERSE_PLAYBACK_MS = 1000;
     static final int TEST_REVERSE_MS = 4000;
     static final long SEED_RETRY_MS = 500;
     static final long CAMERA_REOPEN_MS = 1000;
@@ -71,8 +71,11 @@ public class MainActivity extends Activity {
     TextView overlay;
     ImageView watermarkView;
     TextView effectControlLabel;
-    LinearLayout timeControlRow, slowControlRow, stutterSlicesRow, freezeRateRow;
+    LinearLayout timeControlRow, slowControlRow, stutterSlicesRow, freezeRateRow, fastSpeedRow;
+    LinearLayout modeRail;
+    TextView railView, railTime, railParam, railShare;
     Button slices2Button, slices4Button, slices6Button, slices8Button;
+    Button fast1Button, fast15Button, fast2Button, fast3Button, fast4Button;
 
     Button reverseLensButton;
     Button dubBufReverseButton;
@@ -139,6 +142,10 @@ public class MainActivity extends Activity {
     int reverseRecordMs = STANDARD_REVERSE_RECORD_MS;
     int reversePlaybackMs = STANDARD_REVERSE_PLAYBACK_MS;
     int slowPlaybackMs = 4000;
+    int stutterSlices = 4;
+    int fastTimeMs = 1000;
+    float fastSpeed = 2.0f;
+    volatile boolean appPaused = false;
     String activeTestPreset = "STANDARD_REVERSE";
 
     CameraManager cameraManager;
@@ -194,6 +201,10 @@ public class MainActivity extends Activity {
     volatile CameraOpenState cameraOpenState = CameraOpenState.CLOSED;
     int cameraOpenGeneration = 0;
     final Runnable reopenCameraRunnable = () -> {
+        if (appPaused) {
+            TraceLog.i("camera reopen suppressed while paused");
+            return;
+        }
         if (cameraOpenState == CameraOpenState.RECOVERING ||
                 cameraOpenState == CameraOpenState.CLOSED) {
             cameraOpenState = CameraOpenState.CLOSED;
@@ -328,6 +339,7 @@ public class MainActivity extends Activity {
         buildRecordCue(root);
         buildRecordProgress(root);
         buildHud(root);
+        buildModeRail(root);
         buildWatermark(root);
         buildFlashLabel(root);
         buildSplash(root);
@@ -593,7 +605,8 @@ public class MainActivity extends Activity {
         android.graphics.drawable.GradientDrawable shape =
                 new android.graphics.drawable.GradientDrawable();
 
-        shape.setColor(TIMETOY_VIOLET);
+        // Lighter violet timing cue.
+        shape.setColor(0x889f67d5);
         shape.setCornerRadius(0f);
         recordCue.setBackground(shape);
         recordCue.setVisibility(View.GONE);
@@ -610,7 +623,10 @@ public class MainActivity extends Activity {
     }
 
     void startRecordCue(Runnable onComplete) {
-        if (recordCueMs <= 0) {
+        startRecordCue(recordCueMs, onComplete);
+    }
+    void startRecordCue(int cueDurationMs, Runnable onComplete) {
+        if (cueDurationMs <= 0) {
             if (onComplete != null) {
                 onComplete.run();
             }
@@ -634,7 +650,7 @@ public class MainActivity extends Activity {
             recordCue.animate()
                     .scaleX(1.0f)
                     .scaleY(0.0f)
-                    .setDuration(recordCueMs)
+                    .setDuration(cueDurationMs)
                     .withEndAction(() -> {
                         // Remain as a flat violet line until actual recording
                         // begins. recorder.start() is the only hide event.
@@ -709,6 +725,80 @@ public class MainActivity extends Activity {
         });
     }
 
+    void buildModeRail(FrameLayout root) {
+        modeRail = new LinearLayout(this);
+        modeRail.setOrientation(LinearLayout.VERTICAL);
+        modeRail.setPadding(dp(8), dp(8), dp(8), dp(8));
+        modeRail.setBackgroundColor(0x55000000);
+
+        TextView tt = makeRailText("TT");
+        tt.setTextColor(TIMETOY_VIOLET);
+        tt.setTextSize(18);
+        railView = makeRailText("Reverse");
+        railTime = makeRailText("1.0 s");
+        railParam = makeRailText("");
+        railShare = makeRailText("Share");
+
+        modeRail.addView(tt);
+        modeRail.addView(railView);
+        modeRail.addView(railTime);
+        modeRail.addView(railParam);
+        modeRail.addView(railShare);
+
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                dp(116), -2, Gravity.TOP | Gravity.LEFT);
+        lp.setMargins(dp(10), dp(10), 0, 0);
+        root.addView(modeRail, lp);
+        updateModeRail();
+    }
+
+    TextView makeRailText(String text) {
+        TextView v = new TextView(this);
+        v.setText(text);
+        v.setTextColor(0xffffffff);
+        v.setTextSize(14);
+        v.setGravity(Gravity.LEFT | Gravity.CENTER_VERTICAL);
+        v.setPadding(dp(6), dp(5), dp(6), dp(5));
+        v.setMinHeight(dp(34));
+        return v;
+    }
+
+    String formatSeconds(int ms) {
+        if (ms % 1000 == 0)
+            return String.format(Locale.US, "%.1f s", ms / 1000.0f);
+        return String.format(Locale.US, "%.1f s", ms / 1000.0f);
+    }
+
+    void updateModeRail() {
+        if (modeRail == null || glView == null) return;
+        GLView.LensMode m = glView.getLensMode();
+        String time = "";
+        String param = "";
+
+        if (m == GLView.LensMode.SLOW) {
+            time = formatSeconds(slowPlaybackMs);
+            param = slowdownText();
+        } else if (m == GLView.LensMode.DUBBUF_REVERSE) {
+            time = formatSeconds(reversePlaybackMs);
+        } else if (m == GLView.LensMode.STUTTER) {
+            time = formatSeconds(reversePlaybackMs);
+            param = stutterSlices + " slices";
+        } else if (m == GLView.LensMode.FAST) {
+            time = formatSeconds(fastTimeMs);
+            param = Math.abs(fastSpeed - Math.round(fastSpeed)) < 0.001f
+                    ? String.format(Locale.US, "%.0f×", fastSpeed)
+                    : String.format(Locale.US, "%.1f×", fastSpeed);
+        } else if (m == GLView.LensMode.FREEZE) {
+            float hz = glView.getFreezeFrequency();
+            time = formatSeconds(Math.round(1000.0f / Math.max(2.0f, hz)));
+        }
+
+        railView.setText(currentLensTitle());
+        railTime.setText(time);
+        railParam.setText(param);
+        railShare.setText("Share");
+    }
+
     void buildHud(FrameLayout root) {
         hudPanel = new LinearLayout(this);
         hudPanel.setOrientation(LinearLayout.VERTICAL);
@@ -718,7 +808,8 @@ public class MainActivity extends Activity {
         LinearLayout lensRow = new LinearLayout(this);
         lensRow.setOrientation(LinearLayout.HORIZONTAL);
 
-        reverseLensButton = makeControlButton("Legacy Reverse");
+        // Reuse the old button variable; Legacy Reverse is removed.
+        reverseLensButton = makeControlButton("Fast");
         dubBufReverseButton = makeControlButton("Reverse");
         slowLensButton = makeControlButton("Slow");
         freezeLensButton = makeControlButton("Strobe");
@@ -893,6 +984,19 @@ public class MainActivity extends Activity {
         stutterSlicesRow.addView(slices6Button, tinyButtonParams());
         stutterSlicesRow.addView(slices8Button, tinyButtonParams());
 
+        fastSpeedRow = new LinearLayout(this);
+        fastSpeedRow.setOrientation(LinearLayout.HORIZONTAL);
+        fast1Button = makeSmallControlButton("1×");
+        fast15Button = makeSmallControlButton("1.5×");
+        fast2Button = makeSmallControlButton("2×");
+        fast3Button = makeSmallControlButton("3×");
+        fast4Button = makeSmallControlButton("4×");
+        fastSpeedRow.addView(fast1Button, tinyButtonParams());
+        fastSpeedRow.addView(fast15Button, tinyButtonParams());
+        fastSpeedRow.addView(fast2Button, tinyButtonParams());
+        fastSpeedRow.addView(fast3Button, tinyButtonParams());
+        fastSpeedRow.addView(fast4Button, tinyButtonParams());
+
         /*
          * Controls first: diagnostics can no longer push them off-screen.
          */
@@ -905,6 +1009,7 @@ public class MainActivity extends Activity {
         hudPanel.addView(timeControlRow);
         hudPanel.addView(slowControlRow);
         hudPanel.addView(stutterSlicesRow);
+        hudPanel.addView(fastSpeedRow);
         hudPanel.addView(freezeRateRow);
 
         FrameLayout.LayoutParams hudParams =
@@ -965,7 +1070,7 @@ public class MainActivity extends Activity {
 
 
         reverseLensButton.setOnClickListener(v ->
-                setLensMode(GLView.LensMode.REVERSE));
+                setLensMode(GLView.LensMode.FAST));
         dubBufReverseButton.setOnClickListener(v ->
                 setLensMode(GLView.LensMode.DUBBUF_REVERSE));
 
@@ -982,10 +1087,15 @@ public class MainActivity extends Activity {
         freeze10Button.setOnClickListener(v -> setFreezeFrequency(10.0f));
         stutterLensButton.setOnClickListener(v ->
                 setLensMode(GLView.LensMode.STUTTER));
-        slices2Button.setOnClickListener(v -> glView.setStutterSlices(2));
-        slices4Button.setOnClickListener(v -> glView.setStutterSlices(4));
-        slices6Button.setOnClickListener(v -> glView.setStutterSlices(6));
-        slices8Button.setOnClickListener(v -> glView.setStutterSlices(8));
+        slices2Button.setOnClickListener(v -> setStutterSlices(2));
+        slices4Button.setOnClickListener(v -> setStutterSlices(4));
+        slices6Button.setOnClickListener(v -> setStutterSlices(6));
+        slices8Button.setOnClickListener(v -> setStutterSlices(8));
+        fast1Button.setOnClickListener(v -> setFastSpeed(1.0f));
+        fast15Button.setOnClickListener(v -> setFastSpeed(1.5f));
+        fast2Button.setOnClickListener(v -> setFastSpeed(2.0f));
+        fast3Button.setOnClickListener(v -> setFastSpeed(3.0f));
+        fast4Button.setOnClickListener(v -> setFastSpeed(4.0f));
 
         resolution1080Button.setOnClickListener(
                 v -> setCaptureResolution(1920, 1080)
@@ -1047,10 +1157,10 @@ public class MainActivity extends Activity {
         reverseRes720Button.setOnClickListener(v -> setReverseTestResolution(1280, 720, "720"));
         reverseRes540Button.setOnClickListener(v -> setReverseTestResolution(960, 540, "540"));
         reverseResVgaButton.setOnClickListener(v -> setReverseTestResolution(640, 480, "VGA"));
-        reverseTime16Button.setOnClickListener(v -> setModePlaybackDuration(500));
-        reverseTime4Button.setOnClickListener(v -> setModePlaybackDuration(1000));
-        reverseTime8Button.setOnClickListener(v -> setModePlaybackDuration(2000));
-        standardReverseButton.setOnClickListener(v -> setModePlaybackDuration(4000));
+        reverseTime16Button.setOnClickListener(v -> selectTimeChoice(0));
+        reverseTime4Button.setOnClickListener(v -> selectTimeChoice(1));
+        reverseTime8Button.setOnClickListener(v -> selectTimeChoice(2));
+        standardReverseButton.setOnClickListener(v -> selectTimeChoice(3));
 
         refreshTestPresetSupport();
         updateControlButtons();
@@ -1100,6 +1210,18 @@ public class MainActivity extends Activity {
                 TraceLog.i("Stutter first playback selected; hide splash");
                 hideSplashAfterFirstFrame();
             }));
+            return;
+        }
+        if (glView.getLensMode() == GLView.LensMode.FAST) {
+            updateOverlay("Starting Fast history");
+            startPreviewOnlySession(() -> {
+                glView.setFastTimeMs(fastTimeMs);
+                glView.setFastSpeed(fastSpeed);
+                glView.startFast(() -> {
+                    TraceLog.i("Fast first playback selected; hide splash");
+                    hideSplashAfterFirstFrame();
+                });
+            });
             return;
         }
         cycleCount = 0;
@@ -2138,7 +2260,13 @@ public class MainActivity extends Activity {
         recordingCycleId = -1;
         refreshOverlay();
         if (glView != null && glView.getLensMode() == GLView.LensMode.SLOW) {
-            startRecordCue(null);
+            TraceLog.i("SLOW LATENCY record stop t=" +
+                    SystemClock.elapsedRealtime());
+            // Stay visibly shrinking for the full nominal non-recording span;
+            // recorder.start() remains the authoritative hide event.
+            int visualWaitMs = Math.max(1,
+                    slowPlaybackMs - effectiveRecordDurationMs());
+            startRecordCue(visualWaitMs, null);
         }
 
         try {
@@ -2579,6 +2707,13 @@ public class MainActivity extends Activity {
     }
 
     void handleCameraFailure(CameraDevice device, String reason) {
+        if (appPaused) {
+            TraceLog.i("camera failure while paused; no recovery loop: " + reason);
+            try { device.close(); } catch (Exception ignored) {}
+            if (cameraDevice == device) cameraDevice = null;
+            cameraOpenState = CameraOpenState.CLOSED;
+            return;
+        }
         if (cameraOpenState == CameraOpenState.RECOVERING) {
             TraceLog.i("duplicate camera failure ignored: " + reason);
             try { device.close(); } catch (Exception ignored) {}
@@ -2596,6 +2731,11 @@ public class MainActivity extends Activity {
     }
 
     void scheduleCameraRecovery(String reason) {
+        if (appPaused) {
+            TraceLog.i("camera recovery suppressed while paused: " + reason);
+            cameraOpenState = CameraOpenState.CLOSED;
+            return;
+        }
         if (cameraOpenState == CameraOpenState.RECOVERING) {
             TraceLog.i("camera recovery already pending: " + reason);
             return;
@@ -3014,6 +3154,27 @@ public class MainActivity extends Activity {
             return;
         }
 
+        if (mode == GLView.LensMode.FAST) {
+            running = false;
+            recordingFollowing = false;
+            pendingRecordingCycleId = -1;
+            loadingCycleId = -1;
+            glView.stopFreeze();
+            glView.stopDubBufReverse();
+            glView.stopStutter();
+            glView.releaseAllPlayers();
+            glView.setLensMode(mode);
+            captureFps = 60;
+            captureWidth = 1280;
+            captureHeight = 720;
+            playbackFps = 60;
+            activeTestPreset = "FAST_HISTORY_720P60";
+            updateControlButtons();
+            updateOverlay("Fast " + fastSpeed + "×; restarting");
+            if (splashPanel != null) splashPanel.setVisibility(View.GONE);
+            scheduleCameraRecovery("Fast mode restart");
+            return;
+        }
         if (mode == GLView.LensMode.STUTTER) {
             running = false;
             recordingFollowing = false;
@@ -3101,6 +3262,36 @@ public class MainActivity extends Activity {
         updateOverlay("Freeze " + hz + " Hz");
     }
 
+    void selectTimeChoice(int index) {
+        boolean slow = glView != null &&
+                glView.getLensMode() == GLView.LensMode.SLOW;
+        int[] values = slow
+                ? new int[]{1000, 2000, 3000, 4000}
+                : new int[]{500, 1000, 1500, 2000};
+        int i = Math.max(0, Math.min(3, index));
+        setModePlaybackDuration(values[i]);
+    }
+
+    void setStutterSlices(int slices) {
+        stutterSlices = slices;
+        if (glView != null) glView.setStutterSlices(slices);
+        updateControlButtons();
+    }
+
+    void setFastSpeed(float speed) {
+        fastSpeed = Math.max(1.0f, Math.min(4.0f, speed));
+        if (fastSpeed > 1.0f &&
+                (fastSpeed - 1.0f) * fastTimeMs > 2000.0f)
+            fastTimeMs = Math.max(100,
+                    Math.round(2000.0f / (fastSpeed - 1.0f)));
+        if (glView != null) {
+            glView.setFastTimeMs(fastTimeMs);
+            glView.setFastSpeed(fastSpeed);
+        }
+        updateControlButtons();
+        updateOverlay("Fast " + fastSpeed + "×");
+    }
+
     void setModePlaybackDuration(int durationMs) {
         if (glView == null) return;
         GLView.LensMode mode = glView.getLensMode();
@@ -3115,9 +3306,18 @@ public class MainActivity extends Activity {
             glView.startDubBufReverse(reversePlaybackMs, null);
             updateOverlay("Reverse Time " + (reversePlaybackMs / 1000.0f) + " s");
         } else if (mode == GLView.LensMode.STUTTER) {
-            int t = Math.max(400, Math.min(1600, durationMs));
+            int t = Math.max(500, Math.min(2000, durationMs));
+            reversePlaybackMs = t;
             glView.setStutterTimeMs(t);
             updateOverlay("Stutter Time " + (t / 1000.0f) + " s");
+        } else if (mode == GLView.LensMode.FAST) {
+            fastTimeMs = Math.max(100, Math.min(2000, durationMs));
+            if (fastSpeed > 1.0f &&
+                    (fastSpeed - 1.0f) * fastTimeMs > 2000.0f)
+                fastSpeed = 1.0f + 2000.0f / fastTimeMs;
+            glView.setFastTimeMs(fastTimeMs);
+            glView.setFastSpeed(fastSpeed);
+            updateOverlay("Fast Time " + (fastTimeMs / 1000.0f) + " s");
         } else if (mode == GLView.LensMode.FREEZE) {
             int t = Math.max(100, Math.min(4000, durationMs));
             glView.setFreezeFrequency(1000.0f / t);
@@ -3238,6 +3438,7 @@ public class MainActivity extends Activity {
         if (glView.getLensMode() == GLView.LensMode.SLOW) return "Slow";
         if (glView.getLensMode() == GLView.LensMode.FREEZE) return "Freeze";
         if (glView.getLensMode() == GLView.LensMode.STUTTER) return "Stutter";
+        if (glView.getLensMode() == GLView.LensMode.FAST) return "Fast";
         return "Reverse";
     }
 
@@ -3334,19 +3535,24 @@ public class MainActivity extends Activity {
             GLView.LensMode m = glView.getLensMode();
             boolean slow = m == GLView.LensMode.SLOW;
             boolean stutter = m == GLView.LensMode.STUTTER;
+            boolean fast = m == GLView.LensMode.FAST;
             boolean strobe = m == GLView.LensMode.FREEZE;
-            effectControlLabel.setText(stutter ? "Time / Slices" : slow ? "Time / Slowdown" : "Time");
+            effectControlLabel.setText(stutter ? "Time / Slices" :
+                    fast ? "Time / Speed" :
+                    slow ? "Time / Slowdown" : "Time");
             timeControlRow.setVisibility(View.VISIBLE);
             slowControlRow.setVisibility(slow ? View.VISIBLE : View.GONE);
             stutterSlicesRow.setVisibility(stutter ? View.VISIBLE : View.GONE);
+            fastSpeedRow.setVisibility(fast ? View.VISIBLE : View.GONE);
             freezeRateRow.setVisibility(View.GONE);
+            updateModeRail();
         }
         if (speed16Button == null) {
             return;
         }
 
         if (reverseLensButton != null && glView != null) {
-            reverseLensButton.setEnabled(glView.getLensMode() != GLView.LensMode.REVERSE);
+            reverseLensButton.setEnabled(glView.getLensMode() != GLView.LensMode.FAST);
             if (dubBufReverseButton != null) dubBufReverseButton.setEnabled(glView.getLensMode() != GLView.LensMode.DUBBUF_REVERSE);
             slowLensButton.setEnabled(
                     glView.getLensMode() != GLView.LensMode.SLOW
@@ -3359,6 +3565,13 @@ public class MainActivity extends Activity {
                         glView.getLensMode() != GLView.LensMode.STUTTER
                 );
             }
+        }
+        if (fast1Button != null) {
+            fast1Button.setEnabled(Math.abs(fastSpeed - 1.0f) > 0.001f);
+            fast15Button.setEnabled(Math.abs(fastSpeed - 1.5f) > 0.001f);
+            fast2Button.setEnabled(Math.abs(fastSpeed - 2.0f) > 0.001f);
+            fast3Button.setEnabled(Math.abs(fastSpeed - 3.0f) > 0.001f);
+            fast4Button.setEnabled(Math.abs(fastSpeed - 4.0f) > 0.001f);
         }
         if (freeze2Button != null && glView != null) {
             float hz = glView.getFreezeFrequency();
@@ -3392,7 +3605,9 @@ public class MainActivity extends Activity {
             reverseTime4Button.setText(slowMode ? "2s" : "1s");
             reverseTime8Button.setText(slowMode ? "3s" : "1.5s");
             standardReverseButton.setText(slowMode ? "4s" : "2s");
-            int selectedMs = slowMode ? slowPlaybackMs : reversePlaybackMs;
+            int selectedMs = slowMode ? slowPlaybackMs :
+                    (glView != null && glView.getLensMode() == GLView.LensMode.FAST
+                            ? fastTimeMs : reversePlaybackMs);
             reverseTime16Button.setEnabled(selectedMs != (slowMode ? 1000 : 500));
             reverseTime4Button.setEnabled(selectedMs != (slowMode ? 2000 : 1000));
             reverseTime8Button.setEnabled(selectedMs != (slowMode ? 3000 : 1500));
@@ -3511,6 +3726,7 @@ public class MainActivity extends Activity {
             else if (lensMode == GLView.LensMode.DUBBUF_REVERSE) mode = "REV";
             else if (lensMode == GLView.LensMode.FREEZE) mode = "FREEZE";
             else if (lensMode == GLView.LensMode.STUTTER) mode = "STUTTER";
+            else if (lensMode == GLView.LensMode.FAST) mode = "FAST";
             else mode = "REV";
 
             String rendererState =
@@ -3528,6 +3744,10 @@ public class MainActivity extends Activity {
                     glView != null && glView.renderer != null) {
                 playing = glView.renderer.getStutterCycle();
                 recording = -1;
+            } else if (lensMode == GLView.LensMode.FAST &&
+                    glView != null && glView.renderer != null) {
+                playing = glView.renderer.getFastCycle();
+                recording = -1;
             } else {
                 playing = currentItem == null || !currentItem.started
                         ? -1 : currentItem.cycleId;
@@ -3537,8 +3757,17 @@ public class MainActivity extends Activity {
             int ready = nextItem != null && nextItem.ready
                     ? nextItem.cycleId : -1;
 
-            String fpsText = measuredCaptureFps > 0.0
-                    ? String.format(Locale.US, "%.1f", measuredCaptureFps)
+            boolean previewFpsMode =
+                    lensMode == GLView.LensMode.DUBBUF_REVERSE ||
+                    lensMode == GLView.LensMode.STUTTER ||
+                    lensMode == GLView.LensMode.FAST ||
+                    lensMode == GLView.LensMode.FREEZE;
+            double actualFps = previewFpsMode &&
+                    glView != null && glView.renderer != null
+                    ? glView.renderer.cameraFps()
+                    : measuredCaptureFps;
+            String fpsText = actualFps > 0.0
+                    ? String.format(Locale.US, "%.1f", actualFps)
                     : "--";
 
             long maxDrawGapMs = glView != null && glView.renderer != null
@@ -3597,6 +3826,42 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onPause() {
+        super.onPause();
+        appPaused = true;
+        running = false;
+        mainHandler.removeCallbacks(reopenCameraRunnable);
+        cameraOpenGeneration++;
+        TraceLog.i("MainActivity onPause; camera recovery disabled");
+
+        releasePersistentRecordingPipeline();
+        CameraDevice device = cameraDevice;
+        cameraDevice = null;
+        cameraOpenState = CameraOpenState.CLOSED;
+        if (device != null) {
+            try { device.close(); } catch (Exception ignored) {}
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        enterFullscreen();
+        if (!appPaused) return;
+        appPaused = false;
+        TraceLog.i("MainActivity onResume; reopening camera once");
+        if (cameraTexture != null &&
+                checkSelfPermission(Manifest.permission.CAMERA) ==
+                        PackageManager.PERMISSION_GRANTED) {
+            mainHandler.postDelayed(() -> {
+                if (!appPaused && cameraDevice == null &&
+                        cameraOpenState == CameraOpenState.CLOSED)
+                    startCamera();
+            }, 250L);
+        }
+    }
+
+    @Override
     protected void onDestroy() {
         running = false;
 
@@ -3618,6 +3883,7 @@ public class MainActivity extends Activity {
 
         if (glView != null) {
             glView.stopFreeze();
+            glView.stopFast();
             glView.releaseAllPlayers();
         }
 

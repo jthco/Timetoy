@@ -1,9 +1,9 @@
 // ============================================================
 // Timetoy
 // File: GLView.java
-// Version: v0.6.23
-// Build: Standard Controls + Watermark + Mode Isolation
-// Date: 2026-08-06
+// Version: v0.6.24
+// Build: Fast View + 48 Hz Reverse + Fixed View HUD
+// Date: 2026-08-09
 // ============================================================
 
 package com.jth.smm;
@@ -25,7 +25,7 @@ public class GLView extends GLSurfaceView {
     private final LensPlayer[] players = new LensPlayer[2];
     private final LensMode[] slotModes = new LensMode[2];
 
-    public enum LensMode { REVERSE, DUBBUF_REVERSE, SLOW, FREEZE, STUTTER }
+    public enum LensMode { REVERSE, DUBBUF_REVERSE, SLOW, FREEZE, STUTTER, FAST }
 
     private volatile LensMode lensMode = LensMode.DUBBUF_REVERSE;
     private final boolean[] waitingForFirstTexture = new boolean[2];
@@ -33,7 +33,7 @@ public class GLView extends GLSurfaceView {
 
     private final Handler dubBufHandler = new Handler(Looper.getMainLooper());
     private volatile boolean dubBufRunning = false;
-    private volatile int dubBufPlaybackMs = 2000;
+    private volatile int dubBufPlaybackMs = 1000;
     private volatile Runnable dubBufFirstPlayback;
     private final Runnable dubBufTick = new Runnable() {
         @Override public void run() {
@@ -70,6 +70,24 @@ public class GLView extends GLSurfaceView {
         }
     };
 
+    private final Handler fastHandler = new Handler(Looper.getMainLooper());
+    private volatile boolean fastRunning = false;
+    private volatile Runnable fastFirstPlayback;
+    private final Runnable fastTick = new Runnable() {
+        @Override public void run() {
+            if (!fastRunning || lensMode != LensMode.FAST) return;
+            queueEvent(() -> {
+                boolean first = renderer.advanceFastPlayback();
+                requestRender();
+                if (first && fastFirstPlayback != null) {
+                    Runnable r = fastFirstPlayback;
+                    fastFirstPlayback = null;
+                    post(r);
+                }
+            });
+            fastHandler.postDelayed(this, 1000L / 60L);
+        }
+    };
     private final Handler freezeHandler = new Handler(Looper.getMainLooper());
     private volatile boolean freezeRunning = false;
     private volatile float freezeFrequencyHz = 5.0f;
@@ -103,6 +121,7 @@ public class GLView extends GLSurfaceView {
         if (mode != LensMode.FREEZE) stopFreeze();
         if (mode != LensMode.DUBBUF_REVERSE) stopDubBufReverse();
         if (mode != LensMode.STUTTER) stopStutter();
+        if (mode != LensMode.FAST) stopFast();
         lensMode = mode;
         TraceLog.i("Lens mode=" + mode);
     }
@@ -119,6 +138,7 @@ public class GLView extends GLSurfaceView {
     public void startDubBufReverse(int playbackMs, Runnable onFirstPlayback) {
         stopFreeze();
         stopStutter();
+        stopFast();
         releaseAllPlayers();
         lensMode = LensMode.DUBBUF_REVERSE;
         dubBufPlaybackMs = playbackMs;
@@ -143,6 +163,7 @@ public class GLView extends GLSurfaceView {
     public void startStutter(Runnable onFirstPlayback) {
         stopFreeze();
         stopDubBufReverse();
+        stopFast();
         releaseAllPlayers();
         lensMode = LensMode.STUTTER;
         stutterFirstPlayback = onFirstPlayback;
@@ -167,19 +188,54 @@ public class GLView extends GLSurfaceView {
         stutterRunning = false;
         stutterHandler.removeCallbacks(stutterTick);
         stutterFirstPlayback = null;
-        if (renderer != null) queueEvent(() -> renderer.releaseStutterHistory());
+        if (renderer != null && lensMode != LensMode.FAST)
+            queueEvent(() -> renderer.releaseStutterHistory());
+    }
+
+
+    public void startFast(Runnable onFirstPlayback) {
+        stopFreeze();
+        stopDubBufReverse();
+        stopStutter();
+        releaseAllPlayers();
+        lensMode = LensMode.FAST;
+        fastFirstPlayback = onFirstPlayback;
+        fastRunning = true;
+        fastHandler.removeCallbacks(fastTick);
+        queueEvent(() -> {
+            renderer.beginFast();
+            requestRender();
+        });
+        fastHandler.post(fastTick);
+        TraceLog.i("Fast started historyMs=2000");
+    }
+    public void setFastTimeMs(int timeMs) {
+        if (renderer != null) queueEvent(() -> renderer.setFastTimeMs(timeMs));
+    }
+    public void setFastSpeed(float speed) {
+        if (renderer != null) queueEvent(() -> renderer.setFastSpeed(speed));
+    }
+    public void stopFast() {
+        fastRunning = false;
+        fastHandler.removeCallbacks(fastTick);
+        fastFirstPlayback = null;
+        if (renderer != null && lensMode != LensMode.STUTTER)
+            queueEvent(() -> renderer.releaseStutterHistory());
     }
 
     public void startFreeze(float frequencyHz) {
         setFreezeFrequency(frequencyHz);
         stopDubBufReverse();
         stopStutter();
+        stopFast();
         releaseAllPlayers();
         lensMode = LensMode.FREEZE;
         freezeRunning = true;
         freezeHandler.removeCallbacks(freezeTick);
+        // Capture immediately so Freeze never exposes a live-camera interval
+        // while taking ownership of the display.
         queueEvent(() -> {
-            renderer.showCameraOutput();
+            renderer.captureLiveFrameToFreezeTexture();
             requestRender();
         });
         long intervalMs = Math.max(100L, Math.round(1000.0f / freezeFrequencyHz));
@@ -311,3 +367,4 @@ public class GLView extends GLSurfaceView {
         releaseSlot(1);
     }
 }
+// TERMUX-AIDE-TEST
