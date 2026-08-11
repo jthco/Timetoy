@@ -1,8 +1,8 @@
 // ============================================================
 // Timetoy
 // File: GLView.java
-// Version: v0.6.24
-// Build: Fast View + 48 Hz Reverse + Fixed View HUD
+// Version: v0.6.25
+// Build: 30 Hz Reverse Tape + Slice Stutter
 // Date: 2026-08-09
 // ============================================================
 
@@ -47,7 +47,7 @@ public class GLView extends GLSurfaceView {
                     post(r);
                 }
             });
-            dubBufHandler.postDelayed(this, 1000L / 48L);
+            dubBufHandler.postDelayed(this, 1000L / 30L);
         }
     };
 
@@ -174,7 +174,7 @@ public class GLView extends GLSurfaceView {
             requestRender();
         });
         stutterHandler.post(stutterTick);
-        TraceLog.i("Stutter started sliceMs=200 passes=4 historyMs=2000");
+        TraceLog.i("Stutter started slice-based; historyMs=2000");
     }
 
     public void setStutterTimeMs(int timeMs) {

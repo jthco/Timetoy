@@ -1,8 +1,8 @@
 // ============================================================
 // Timetoy
 // File: GLRenderer.java
-// Version: v0.6.24
-// Build: Fast View + 48 Hz Reverse + Measured Preview FPS
+// Version: v0.6.25
+// Build: 30 Hz Reverse Tape + Slice Stutter
 // Date: 2026-08-09
 // ============================================================
 
@@ -57,7 +57,7 @@ public class GLRenderer implements GLSurfaceView.Renderer {
     static final int HISTORY_HEIGHT = 720;
     static final int HISTORY_FPS = 60;
     static final int HISTORY_FRAMES = 120;       // two seconds
-    int stutterTimeMs = 800;
+    int stutterTimeMs = 1000;
     int stutterSlices = 4;
     final int[] historyTexIds = new int[HISTORY_FRAMES];
     final SimpleTextureSource[] historySources = new SimpleTextureSource[HISTORY_FRAMES];
@@ -331,10 +331,10 @@ public class GLRenderer implements GLSurfaceView.Renderer {
 
     public void beginDubBufReverse(int playbackMs) {
         releaseDubBufReverse();
-        // Reverse targets 48 unique source frames/s. Sample the preview
-        // timestamp stream toward 48 Hz and display each captured frame once.
-        dubBufFrames = Math.max(24,
-                Math.min(MAX_DUBBUF_FRAMES, playbackMs * 48 / 1000));
+        // Reverse tape follows the unique preview rate observed on this device.
+        // Capture and playback both use 30 samples/s.
+        dubBufFrames = Math.max(15,
+                Math.min(MAX_DUBBUF_FRAMES, playbackMs * 30 / 1000));
         for (int page = 0; page < 2; page++) {
             for (int i = 0; i < dubBufFrames; i++) {
                 int id = make2dTexture();
@@ -359,7 +359,7 @@ public class GLRenderer implements GLSurfaceView.Renderer {
         long ts = cameraSurfaceTexture.getTimestamp();
         if (ts == dubBufLastCameraTimestampNs) return;
         dubBufLastCameraTimestampNs = ts;
-        final long intervalNs = 1_000_000_000L / 48L;
+        final long intervalNs = 1_000_000_000L / 30L;
         if (dubBufNextCaptureTimestampNs < 0L)
             dubBufNextCaptureTimestampNs = ts;
         if (ts < dubBufNextCaptureTimestampNs) return;
@@ -497,22 +497,19 @@ public class GLRenderer implements GLSurfaceView.Renderer {
     }
 
     public boolean advanceStutterPlayback() {
+        // Time is one slice. Factor is the number of repeats.
         int sliceFrames = Math.max(1,
-                (stutterTimeMs * HISTORY_FPS / 1000) / Math.max(1, stutterSlices));
-        if (!stutterEnabled || historyCount < sliceFrames * 2) return false;
+                stutterTimeMs * HISTORY_FPS / 1000);
+        if (!stutterEnabled || historyCount < sliceFrames) return false;
 
         int pass = stutterOutputIndex / sliceFrames;
         int frameInSlice = stutterOutputIndex % sliceFrames;
 
-        // Latch one recent slice at the start of each four-pass cycle, then
-        // replay that exact logical range four times while recording continues.
         if (stutterOutputIndex == 0 || stutterAnchorNewestSequence < 0L) {
             stutterAnchorNewestSequence = historyNewestSequence;
         }
-        // Start one full slice farther back. The previous implementation's
-        // first pass was one slice too close to live.
         long sequence = stutterAnchorNewestSequence -
-                (2L * sliceFrames) + 1L + frameInSlice;
+                sliceFrames + 1L + frameInSlice;
 
         long oldest = historyNewestSequence - historyCount + 1L;
         if (sequence < oldest || sequence > historyNewestSequence) return false;

@@ -1,8 +1,8 @@
 // ============================================================
 // Timetoy
 // File: MainActivity.java
-// Version: v0.6.24
-// Build: Fast View + Fixed View HUD + Timing Cleanup
+// Version: v0.6.25
+// Build: Functional Rack + Mode Colours + Tape Timing
 // Date: 2026-08-09
 // ============================================================
 
@@ -37,14 +37,20 @@ public class MainActivity extends Activity {
     static final int SLOW_CAPTURE_FPS = 240;
     static final int REVERSE_CAPTURE_FPS = 120;
     static final String VERSION =
-            "v0.6.24";
+            "v0.6.26";
 
     static final int SLOW_PLAYBACK_FPS = 24;
-    static final int SLOW_DECODE_MARGIN_MS = 2100;
-    static final int SLOW_SEED_MIN_FRAMES = 110;
-    static final long SLOW_SEED_MIN_SPAN_US = 450_000L;
+    static final int SLOW_DECODE_MARGIN_MS = 0;
+    static final int SLOW_SEED_MIN_FRAMES = 8;
+    static final long SLOW_SEED_MIN_SPAN_US = 30_000L;
     static final int TIMETOY_VIOLET = 0xff7f3fbf;
     static final int TIMETOY_ORANGE = 0xffff7a1a;
+
+    static final int MODE_REVERSE = 0xffff3030;
+    static final int MODE_SLOW    = 0xff90ee90;
+    static final int MODE_FAST    = 0xff168a3f;
+    static final int MODE_FREEZE  = 0xff20dfe5;
+    static final int MODE_STUTTER = 0xffffdf20;
     static final int STANDARD_REVERSE_RECORD_MS = 1600;
     static final int STANDARD_REVERSE_PLAYBACK_MS = 1000;
     static final int TEST_REVERSE_MS = 4000;
@@ -73,7 +79,7 @@ public class MainActivity extends Activity {
     TextView effectControlLabel;
     LinearLayout timeControlRow, slowControlRow, stutterSlicesRow, freezeRateRow, fastSpeedRow;
     LinearLayout modeRail;
-    TextView railView, railTime, railParam, railShare;
+    TextView railTT, railView, railTime, railParam, railFX, railShare;
     Button slices2Button, slices4Button, slices6Button, slices8Button;
     Button fast1Button, fast15Button, fast2Button, fast3Button, fast4Button;
 
@@ -129,7 +135,7 @@ public class MainActivity extends Activity {
     Button freeze8Button;
     Button freeze10Button;
 
-    int playbackFps = 48;
+    int playbackFps = 30;
     float playbackGain = 1.0f;
     float cameraZoom = 1.0f;
 
@@ -141,7 +147,9 @@ public class MainActivity extends Activity {
     int recordCueMs = 0;
     int reverseRecordMs = STANDARD_REVERSE_RECORD_MS;
     int reversePlaybackMs = STANDARD_REVERSE_PLAYBACK_MS;
-    int slowPlaybackMs = 4000;
+    int slowPlaybackMs = 2000;
+    int slowFactor = 10;
+    int stutterTimeMs = 1000;
     int stutterSlices = 4;
     int fastTimeMs = 1000;
     float fastSpeed = 2.0f;
@@ -728,28 +736,194 @@ public class MainActivity extends Activity {
     void buildModeRail(FrameLayout root) {
         modeRail = new LinearLayout(this);
         modeRail.setOrientation(LinearLayout.VERTICAL);
-        modeRail.setPadding(dp(8), dp(8), dp(8), dp(8));
-        modeRail.setBackgroundColor(0x55000000);
+        modeRail.setPadding(dp(6), dp(6), dp(6), dp(6));
+        modeRail.setBackgroundColor(0x66000000);
 
-        TextView tt = makeRailText("TT");
-        tt.setTextColor(TIMETOY_VIOLET);
-        tt.setTextSize(18);
-        railView = makeRailText("Reverse");
-        railTime = makeRailText("1.0 s");
-        railParam = makeRailText("");
-        railShare = makeRailText("Share");
+        railTT = makeRailText("TT");
+        railTT.setTextSize(18);
+        railView = makeRailText("REVERSE");
+        railTime = makeRailText("1.0 S");
+        railParam = makeRailText("—");
+        railFX = makeRailText("FX");
+        railShare = makeRailText("SHARE");
 
-        modeRail.addView(tt);
+        modeRail.addView(railTT);
         modeRail.addView(railView);
         modeRail.addView(railTime);
         modeRail.addView(railParam);
+        modeRail.addView(railFX);
         modeRail.addView(railShare);
 
+        railTT.setOnClickListener(v ->
+                new android.app.AlertDialog.Builder(this)
+                        .setTitle("TimeToy")
+                        .setMessage("TimeToy\n" + VERSION + "\nby yo")
+                        .setPositiveButton("OK", null)
+                        .show());
+
+        railView.setOnClickListener(v -> showModeChoices(railView));
+        railTime.setOnClickListener(v -> showTimeChoices(railTime));
+        railParam.setOnClickListener(v -> showFactorChoices(railParam));
+        railFX.setOnClickListener(v -> showFxChoices(railFX));
+        railShare.setOnClickListener(v -> flashStatus("Share — coming later", 900));
+
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                dp(116), -2, Gravity.TOP | Gravity.LEFT);
+                dp(122), -2, Gravity.TOP | Gravity.LEFT);
         lp.setMargins(dp(10), dp(10), 0, 0);
         root.addView(modeRail, lp);
         updateModeRail();
+    }
+
+    void showChoicePopup(View anchor, String[] labels, Runnable[] actions) {
+        final PopupWindow[] holder = new PopupWindow[1];
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(4), dp(4), dp(4), dp(4));
+        box.setBackgroundColor(0xee202020);
+
+        for (int i = 0; i < labels.length; i++) {
+            final int index = i;
+            Button b = new Button(this);
+            b.setAllCaps(false);
+            b.setText(labels[i]);
+            b.setTextSize(13);
+            b.setMinHeight(0);
+            b.setMinimumHeight(0);
+            b.setPadding(dp(8), dp(4), dp(8), dp(4));
+            b.setOnClickListener(v -> {
+                if (actions[index] != null) actions[index].run();
+                if (holder[0] != null) holder[0].dismiss();
+            });
+            box.addView(b, new LinearLayout.LayoutParams(dp(170), dp(44)));
+        }
+
+        PopupWindow popup = new PopupWindow(
+                box, dp(178), WindowManager.LayoutParams.WRAP_CONTENT, true);
+        holder[0] = popup;
+        popup.setBackgroundDrawable(
+                new android.graphics.drawable.ColorDrawable(0xee202020));
+        popup.setOutsideTouchable(true);
+        popup.setElevation(dp(6));
+        popup.showAsDropDown(anchor, dp(4), -anchor.getHeight());
+    }
+
+    void showModeChoices(View anchor) {
+        showChoicePopup(anchor,
+                new String[]{"REVERSE", "SLOW", "FAST", "FREEZE", "STUTTER"},
+                new Runnable[]{
+                        () -> setLensMode(GLView.LensMode.DUBBUF_REVERSE),
+                        () -> setLensMode(GLView.LensMode.SLOW),
+                        () -> setLensMode(GLView.LensMode.FAST),
+                        () -> setLensMode(GLView.LensMode.FREEZE),
+                        () -> setLensMode(GLView.LensMode.STUTTER)
+                });
+    }
+
+    void showTimeChoices(View anchor) {
+        GLView.LensMode m = glView.getLensMode();
+        if (m == GLView.LensMode.SLOW) {
+            int[] ms = {500, 1000, 2000, 3000, 4000};
+            String[] labels = {"0.5 S", "1.0 S", "2.0 S", "3.0 S", "4.0 S"};
+            Runnable[] a = new Runnable[ms.length];
+            for (int i = 0; i < ms.length; i++) {
+                final int v = ms[i]; a[i] = () -> setModePlaybackDuration(v);
+            }
+            showChoicePopup(anchor, labels, a);
+        } else if (m == GLView.LensMode.FREEZE) {
+            int[] ms = {125, 167, 250, 333, 500};
+            String[] labels = {"1/8 S", "1/6 S", "1/4 S", "1/3 S", "1/2 S"};
+            Runnable[] a = new Runnable[ms.length];
+            for (int i = 0; i < ms.length; i++) {
+                final int v = ms[i]; a[i] = () -> setModePlaybackDuration(v);
+            }
+            showChoicePopup(anchor, labels, a);
+        } else if (m == GLView.LensMode.STUTTER) {
+            int[] ms = {200, 500, 1000, 1500, 2000};
+            String[] labels = {"0.2 S", "0.5 S", "1.0 S", "1.5 S", "2.0 S"};
+            Runnable[] a = new Runnable[ms.length];
+            for (int i = 0; i < ms.length; i++) {
+                final int v = ms[i]; a[i] = () -> setModePlaybackDuration(v);
+            }
+            showChoicePopup(anchor, labels, a);
+        } else {
+            int[] ms = {500, 1000, 1500, 2000};
+            String[] labels = {"0.5 S", "1.0 S", "1.5 S", "2.0 S"};
+            Runnable[] a = new Runnable[ms.length];
+            for (int i = 0; i < ms.length; i++) {
+                final int v = ms[i]; a[i] = () -> setModePlaybackDuration(v);
+            }
+            showChoicePopup(anchor, labels, a);
+        }
+    }
+
+    void showFactorChoices(View anchor) {
+        GLView.LensMode m = glView.getLensMode();
+        if (m == GLView.LensMode.SLOW) {
+            int[] f = {4, 6, 8, 10, 12};
+            String[] labels = {"4×", "6×", "8×", "10×", "12×"};
+            Runnable[] a = new Runnable[f.length];
+            for (int i = 0; i < f.length; i++) {
+                final int v = f[i]; a[i] = () -> setSlowFactor(v);
+            }
+            showChoicePopup(anchor, labels, a);
+        } else if (m == GLView.LensMode.FAST) {
+            float[] f = {1.5f, 2.0f, 2.5f, 3.0f};
+            String[] labels = {"1.5×", "2×", "2.5×", "3×"};
+            Runnable[] a = new Runnable[f.length];
+            for (int i = 0; i < f.length; i++) {
+                final float v = f[i]; a[i] = () -> setFastSpeed(v);
+            }
+            showChoicePopup(anchor, labels, a);
+        } else if (m == GLView.LensMode.STUTTER) {
+            int[] f = {2, 3, 4, 6, 8};
+            String[] labels = {"2×", "3×", "4×", "6×", "8×"};
+            Runnable[] a = new Runnable[f.length];
+            for (int i = 0; i < f.length; i++) {
+                final int v = f[i]; a[i] = () -> setStutterSlices(v);
+            }
+            showChoicePopup(anchor, labels, a);
+        } else {
+            flashStatus("No Factor for " + currentLensTitle(), 700);
+        }
+    }
+
+    void showFxChoices(View anchor) {
+        Runnable stub = () -> flashStatus("FX — coming later", 900);
+        showChoicePopup(anchor,
+                new String[]{"B/W", "Pop", "Mirror"},
+                new Runnable[]{stub, stub, stub});
+    }
+
+    int modeColor() {
+        if (glView == null) return MODE_REVERSE;
+        switch (glView.getLensMode()) {
+            case SLOW: return MODE_SLOW;
+            case FAST: return MODE_FAST;
+            case FREEZE: return MODE_FREEZE;
+            case STUTTER: return MODE_STUTTER;
+            default: return MODE_REVERSE;
+        }
+    }
+
+    void applyModeColor() {
+        int c = modeColor();
+        TextView[] rack = {railTT, railView, railTime, railParam, railFX, railShare};
+        for (TextView v : rack) {
+            if (v != null) {
+                v.setBackgroundColor(c);
+                v.setTextColor(0xff000000);
+            }
+        }
+
+        if (recordingFrame != null) {
+            android.graphics.drawable.GradientDrawable border =
+                    new android.graphics.drawable.GradientDrawable();
+            border.setColor(android.graphics.Color.TRANSPARENT);
+            border.setStroke(2, c);
+            recordingFrame.setBackground(border);
+        }
+        if (recordCue != null) recordCue.setBackgroundColor(c);
+        if (recordProgress != null) recordProgress.setBackgroundColor(c);
     }
 
     TextView makeRailText(String text) {
@@ -773,19 +947,19 @@ public class MainActivity extends Activity {
         if (modeRail == null || glView == null) return;
         GLView.LensMode m = glView.getLensMode();
         String time = "";
-        String param = "";
+        String factor = "—";
 
         if (m == GLView.LensMode.SLOW) {
             time = formatSeconds(slowPlaybackMs);
-            param = slowdownText();
+            factor = slowFactor + "×";
         } else if (m == GLView.LensMode.DUBBUF_REVERSE) {
             time = formatSeconds(reversePlaybackMs);
         } else if (m == GLView.LensMode.STUTTER) {
-            time = formatSeconds(reversePlaybackMs);
-            param = stutterSlices + " slices";
+            time = formatSeconds(stutterTimeMs);
+            factor = stutterSlices + "×";
         } else if (m == GLView.LensMode.FAST) {
             time = formatSeconds(fastTimeMs);
-            param = Math.abs(fastSpeed - Math.round(fastSpeed)) < 0.001f
+            factor = Math.abs(fastSpeed - Math.round(fastSpeed)) < 0.001f
                     ? String.format(Locale.US, "%.0f×", fastSpeed)
                     : String.format(Locale.US, "%.1f×", fastSpeed);
         } else if (m == GLView.LensMode.FREEZE) {
@@ -793,10 +967,12 @@ public class MainActivity extends Activity {
             time = formatSeconds(Math.round(1000.0f / Math.max(2.0f, hz)));
         }
 
-        railView.setText(currentLensTitle());
-        railTime.setText(time);
-        railParam.setText(param);
-        railShare.setText("Share");
+        railView.setText(currentLensTitle().toUpperCase(Locale.US));
+        railTime.setText(time.toUpperCase(Locale.US));
+        railParam.setText(factor);
+        railFX.setText("FX");
+        railShare.setText("SHARE");
+        applyModeColor();
     }
 
     void buildHud(FrameLayout root) {
@@ -3129,7 +3305,7 @@ public class MainActivity extends Activity {
     int effectiveRecordDurationMs() {
         return glView != null && glView.getLensMode() == GLView.LensMode.REVERSE
                 ? reverseRecordMs
-                : Math.max(100, slowPlaybackMs / 10);
+                : Math.max(50, slowPlaybackMs / Math.max(1, slowFactor));
     }
 
     int effectivePlaybackDurationMs() {
@@ -3146,8 +3322,8 @@ public class MainActivity extends Activity {
         if (mode == GLView.LensMode.DUBBUF_REVERSE) {
             running = false; recordingFollowing = false; recordingCycleId = -1; loadingCycleId = -1;
             glView.stopFreeze(); glView.releaseAllPlayers(); glView.setLensMode(mode);
-            captureFps = 60; captureWidth = 1280; captureHeight = 720; playbackFps = 48;
-            activeTestPreset = "DUBBUF_REVERSE_60_48";
+            captureFps = 60; captureWidth = 1280; captureHeight = 720; playbackFps = 30;
+            activeTestPreset = "DUBBUF_REVERSE_60_30_TAPE";
             updateControlButtons(); updateOverlay("Reverse; restarting");
             if (splashPanel != null) splashPanel.setVisibility(View.GONE);
             scheduleCameraRecovery("DubBuf mode restart");
@@ -3188,9 +3364,13 @@ public class MainActivity extends Activity {
             captureWidth = 1280;
             captureHeight = 720;
             playbackFps = 60;
-            activeTestPreset = "STUTTER_HISTORY_720P60_200MS_X4";
+            stutterTimeMs = 1000;
+            stutterSlices = 4;
+            glView.setStutterTimeMs(stutterTimeMs);
+            glView.setStutterSlices(stutterSlices);
+            activeTestPreset = "STUTTER_SLICE_720P60_1000MS_X4";
             updateControlButtons();
-            updateOverlay("Stutter 0.2 s × 4; restarting");
+            updateOverlay("Stutter 1.0 s × 4; restarting");
             if (splashPanel != null) splashPanel.setVisibility(View.GONE);
             scheduleCameraRecovery("Stutter mode restart");
             return;
@@ -3226,11 +3406,11 @@ public class MainActivity extends Activity {
                 : REVERSE_CAPTURE_FPS;
 
         if (mode == GLView.LensMode.SLOW) {
-            playbackFps = SLOW_PLAYBACK_FPS;
+            playbackFps = Math.max(1, Math.round((float) SLOW_CAPTURE_FPS / slowFactor));
             captureWidth = 1920;
             captureHeight = 1080;
-            recordCueMs = Math.max(0, slowPlaybackMs - Math.max(100, slowPlaybackMs / 10) - SLOW_DECODE_MARGIN_MS);
-            activeTestPreset = "SLOW_1080P240_DELAYED";
+            recordCueMs = 0;
+            activeTestPreset = "SLOW_1080P240_TAPE";
         } else {
             playbackFps = 48;
             captureWidth = 1280;
@@ -3278,6 +3458,19 @@ public class MainActivity extends Activity {
         updateControlButtons();
     }
 
+    void setSlowFactor(int factor) {
+        slowFactor = Math.max(2, Math.min(16, factor));
+        playbackFps = Math.max(1, Math.round((float) SLOW_CAPTURE_FPS / slowFactor));
+        captureDurationMs = Math.max(50, slowPlaybackMs / slowFactor);
+        recordCueMs = 0;
+        if (glView != null && glView.getLensMode() == GLView.LensMode.SLOW) {
+            updateControlButtons();
+            restartForCaptureOptions("Slow " + slowFactor + "×");
+        } else {
+            updateControlButtons();
+        }
+    }
+
     void setFastSpeed(float speed) {
         fastSpeed = Math.max(1.0f, Math.min(4.0f, speed));
         if (fastSpeed > 1.0f &&
@@ -3296,20 +3489,20 @@ public class MainActivity extends Activity {
         if (glView == null) return;
         GLView.LensMode mode = glView.getLensMode();
         if (mode == GLView.LensMode.SLOW) {
-            slowPlaybackMs = Math.max(1000, Math.min(4000, durationMs));
-            captureDurationMs = Math.max(100, slowPlaybackMs / 10);
-            recordCueMs = Math.max(0, slowPlaybackMs - captureDurationMs - SLOW_DECODE_MARGIN_MS);
-            activeTestPreset = "SLOW_" + slowPlaybackMs + "MS";
+            slowPlaybackMs = Math.max(500, Math.min(4000, durationMs));
+            captureDurationMs = Math.max(50, slowPlaybackMs / Math.max(1, slowFactor));
+            recordCueMs = 0;
+            activeTestPreset = "SLOW_" + slowPlaybackMs + "MS_X" + slowFactor;
             updateOverlay("Slow Time " + (slowPlaybackMs / 1000.0f) + " s");
         } else if (mode == GLView.LensMode.DUBBUF_REVERSE) {
             reversePlaybackMs = Math.max(500, Math.min(4000, durationMs));
             glView.startDubBufReverse(reversePlaybackMs, null);
             updateOverlay("Reverse Time " + (reversePlaybackMs / 1000.0f) + " s");
         } else if (mode == GLView.LensMode.STUTTER) {
-            int t = Math.max(500, Math.min(2000, durationMs));
-            reversePlaybackMs = t;
+            int t = Math.max(200, Math.min(2000, durationMs));
+            stutterTimeMs = t;
             glView.setStutterTimeMs(t);
-            updateOverlay("Stutter Time " + (t / 1000.0f) + " s");
+            updateOverlay("Stutter slice " + (t / 1000.0f) + " s");
         } else if (mode == GLView.LensMode.FAST) {
             fastTimeMs = Math.max(100, Math.min(2000, durationMs));
             if (fastSpeed > 1.0f &&
