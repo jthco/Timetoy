@@ -1,7 +1,7 @@
 // ============================================================
 // Timetoy
 // File: GLView.java
-// Version: v0.6.25
+// Version: v0.6.27
 // Build: 30 Hz Reverse Tape + Slice Stutter
 // Date: 2026-08-09
 // ============================================================
@@ -127,6 +127,10 @@ public class GLView extends GLSurfaceView {
     }
 
     public LensMode getLensMode() { return lensMode; }
+
+    public void setPortraitOrientation(boolean portrait) {
+        if (renderer != null) renderer.setPortraitOrientation(portrait);
+    }
     public void requestCameraRender() { requestRender(); }
     public Surface getDecoderSurface(int slot) { return renderer.getDecoderSurface(slot); }
 

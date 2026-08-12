@@ -1,7 +1,7 @@
 // ============================================================
 // Timetoy
 // File: GLRenderer.java
-// Version: v0.6.25
+// Version: v0.6.27
 // Build: 30 Hz Reverse Tape + Slice Stutter
 // Date: 2026-08-09
 // ============================================================
@@ -48,7 +48,9 @@ public class GLRenderer implements GLSurfaceView.Renderer {
 
     // Camera2 preview arrives in sensor orientation. Apply this once at the
     // camera source so live preview and every effect inherit the same image.
-    static final float CAMERA_TEXTURE_ROTATION_DEGREES = -90.0f;
+    static final float CAMERA_LANDSCAPE_ROTATION_DEGREES = -90.0f;
+    static final float CAMERA_PORTRAIT_ROTATION_DEGREES = -180.0f;
+    volatile boolean portraitOrientation = false;
     final float[] rawCameraMatrix = new float[16];
     final float[] cameraCorrectionMatrix = new float[16];
 
@@ -122,11 +124,7 @@ public class GLRenderer implements GLSurfaceView.Renderer {
         tex2dProgram = makeProgram(VERT, FRAG_2D);
         cameraTexId = makeExternalTexture();
         cameraSource = new SimpleTextureSource(cameraTexId, GL_TEXTURE_EXTERNAL_OES);
-        android.opengl.Matrix.setIdentityM(cameraCorrectionMatrix, 0);
-        android.opengl.Matrix.translateM(cameraCorrectionMatrix, 0, 0.5f, 0.5f, 0f);
-        android.opengl.Matrix.rotateM(cameraCorrectionMatrix, 0,
-                CAMERA_TEXTURE_ROTATION_DEGREES, 0f, 0f, 1f);
-        android.opengl.Matrix.translateM(cameraCorrectionMatrix, 0, -0.5f, -0.5f, 0f);
+        updateCameraCorrectionMatrix();
         currentSource = cameraSource;
         cameraSurfaceTexture = new SurfaceTexture(cameraTexId);
         cameraSurfaceTexture.setOnFrameAvailableListener(st -> view.queueEvent(this::onCameraFrameAvailable));
@@ -144,6 +142,23 @@ public class GLRenderer implements GLSurfaceView.Renderer {
         startNs = System.nanoTime();
         if (view.listener != null) view.listener.onReady(cameraSurfaceTexture);
         glCheck("onSurfaceCreated");
+    }
+
+    public void setPortraitOrientation(boolean portrait) {
+        portraitOrientation = portrait;
+    }
+
+    private void updateCameraCorrectionMatrix() {
+        float degrees = portraitOrientation
+                ? CAMERA_PORTRAIT_ROTATION_DEGREES
+                : CAMERA_LANDSCAPE_ROTATION_DEGREES;
+        android.opengl.Matrix.setIdentityM(cameraCorrectionMatrix, 0);
+        android.opengl.Matrix.translateM(cameraCorrectionMatrix, 0, 0.5f, 0.5f, 0f);
+        android.opengl.Matrix.rotateM(cameraCorrectionMatrix, 0,
+                degrees, 0f, 0f, 1f);
+        android.opengl.Matrix.translateM(cameraCorrectionMatrix, 0, -0.5f, -0.5f, 0f);
+        TraceLog.i("Camera texture orientation portrait=" + portraitOrientation +
+                " rotation=" + degrees);
     }
 
     @Override public void onSurfaceChanged(javax.microedition.khronos.opengles.GL10 gl, int w, int h) {
@@ -583,18 +598,25 @@ public class GLRenderer implements GLSurfaceView.Renderer {
 
         int cycleFrames = Math.max(1,
                 Math.round(fastTimeMs * HISTORY_FPS / 1000.0f));
-        int jumpBackFrames = Math.max(0,
-                Math.round((fastSpeed - 1.0f) * cycleFrames));
-        if (historyCount <= jumpBackFrames + 1) return false;
+
+        int maxSourceOffset = Math.max(0,
+                Math.round((cycleFrames - 1) * fastSpeed));
+        int sourceFrames = maxSourceOffset + 1;
+
+        if (sourceFrames > HISTORY_FRAMES || historyCount < sourceFrames)
+            return false;
 
         if (fastOutputIndex == 0 || fastAnchorNewestSequence < 0L)
             fastAnchorNewestSequence = historyNewestSequence;
 
-        long sequence = fastAnchorNewestSequence - jumpBackFrames +
-                Math.round(fastOutputIndex * fastSpeed);
+        long firstSequence = fastAnchorNewestSequence - maxSourceOffset;
         long oldest = historyNewestSequence - historyCount + 1L;
-        if (sequence < oldest) return false;
-        if (sequence > historyNewestSequence) sequence = historyNewestSequence;
+        if (firstSequence < oldest) return false;
+
+        long sequence = firstSequence +
+                Math.round(fastOutputIndex * fastSpeed);
+        if (sequence > fastAnchorNewestSequence)
+            sequence = fastAnchorNewestSequence;
 
         int slot = (int) (sequence % HISTORY_FRAMES);
         currentSource = historySources[slot];
@@ -604,11 +626,14 @@ public class GLRenderer implements GLSurfaceView.Renderer {
         boolean first = !fastFirstPlaybackReported;
         fastFirstPlaybackReported = true;
         fastOutputIndex++;
+
         if (fastOutputIndex >= cycleFrames) {
             fastOutputIndex = 0;
             fastAnchorNewestSequence = -1L;
             fastCycle++;
-            TraceLog.i("Fast cycle complete=" + fastCycle);
+            TraceLog.i("Fast cycle complete=" + fastCycle +
+                    " sourceFrames=" + sourceFrames +
+                    " factor=" + fastSpeed);
         }
         return first;
     }
@@ -616,8 +641,8 @@ public class GLRenderer implements GLSurfaceView.Renderer {
     public void setFastTimeMs(int timeMs) {
         fastTimeMs = Math.max(100, Math.min(2000, timeMs));
         if (fastSpeed > 1.0f &&
-                (fastSpeed - 1.0f) * fastTimeMs > 2000.0f)
-            fastSpeed = 1.0f + 2000.0f / fastTimeMs;
+                fastSpeed * fastTimeMs > 2000.0f)
+            fastSpeed = 2000.0f / fastTimeMs;
         fastOutputIndex = 0;
         fastAnchorNewestSequence = -1L;
         TraceLog.i("Fast Time=" + fastTimeMs + "ms speed=" + fastSpeed);
@@ -626,9 +651,9 @@ public class GLRenderer implements GLSurfaceView.Renderer {
     public void setFastSpeed(float speed) {
         fastSpeed = Math.max(1.0f, Math.min(4.0f, speed));
         if (fastSpeed > 1.0f &&
-                (fastSpeed - 1.0f) * fastTimeMs > 2000.0f)
+                fastSpeed * fastTimeMs > 2000.0f)
             fastTimeMs = Math.max(100,
-                    Math.round(2000.0f / (fastSpeed - 1.0f)));
+                    Math.round(2000.0f / fastSpeed));
         fastOutputIndex = 0;
         fastAnchorNewestSequence = -1L;
         TraceLog.i("Fast Speed=" + fastSpeed + "x timeMs=" + fastTimeMs);

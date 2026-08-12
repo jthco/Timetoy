@@ -1,7 +1,7 @@
 // ============================================================
 // Timetoy
 // File: MainActivity.java
-// Version: v0.6.25
+// Version: v0.6.27
 // Build: Functional Rack + Mode Colours + Tape Timing
 // Date: 2026-08-09
 // ============================================================
@@ -37,7 +37,7 @@ public class MainActivity extends Activity {
     static final int SLOW_CAPTURE_FPS = 240;
     static final int REVERSE_CAPTURE_FPS = 120;
     static final String VERSION =
-            "v0.6.26";
+            "v0.6.27";
 
     static final int SLOW_PLAYBACK_FPS = 24;
     static final int SLOW_DECODE_MARGIN_MS = 0;
@@ -333,6 +333,10 @@ public class MainActivity extends Activity {
 
         glView =
                 new GLView(this);
+        glView.setPortraitOrientation(
+                getResources().getConfiguration().orientation ==
+                        android.content.res.Configuration.ORIENTATION_PORTRAIT
+        );
         glView.setLensMode(GLView.LensMode.DUBBUF_REVERSE);
 
         root.addView(
@@ -353,16 +357,6 @@ public class MainActivity extends Activity {
         buildSplash(root);
 
         setContentView(root);
-
-        root.setOnClickListener(v -> {
-            hudVisible = !hudVisible;
-
-            hudPanel.setVisibility(
-                    hudVisible
-                            ? View.VISIBLE
-                            : View.GONE
-            );
-        });
 
         glView.listener = st -> {
             TraceLog.i(
@@ -775,6 +769,10 @@ public class MainActivity extends Activity {
     }
 
     void showChoicePopup(View anchor, String[] labels, Runnable[] actions) {
+        showChoicePopup(anchor, labels, actions, null);
+    }
+
+    void showChoicePopup(View anchor, String[] labels, Runnable[] actions, int[] colors) {
         final PopupWindow[] holder = new PopupWindow[1];
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
@@ -790,6 +788,10 @@ public class MainActivity extends Activity {
             b.setMinHeight(0);
             b.setMinimumHeight(0);
             b.setPadding(dp(8), dp(4), dp(8), dp(4));
+            if (colors != null && i < colors.length) {
+                b.setBackgroundColor(colors[i]);
+                b.setTextColor(0xff000000);
+            }
             b.setOnClickListener(v -> {
                 if (actions[index] != null) actions[index].run();
                 if (holder[0] != null) holder[0].dismiss();
@@ -816,6 +818,9 @@ public class MainActivity extends Activity {
                         () -> setLensMode(GLView.LensMode.FAST),
                         () -> setLensMode(GLView.LensMode.FREEZE),
                         () -> setLensMode(GLView.LensMode.STUTTER)
+                },
+                new int[]{
+                        MODE_REVERSE, MODE_SLOW, MODE_FAST, MODE_FREEZE, MODE_STUTTER
                 });
     }
 
@@ -3474,9 +3479,9 @@ public class MainActivity extends Activity {
     void setFastSpeed(float speed) {
         fastSpeed = Math.max(1.0f, Math.min(4.0f, speed));
         if (fastSpeed > 1.0f &&
-                (fastSpeed - 1.0f) * fastTimeMs > 2000.0f)
+                fastSpeed * fastTimeMs > 2000.0f)
             fastTimeMs = Math.max(100,
-                    Math.round(2000.0f / (fastSpeed - 1.0f)));
+                    Math.round(2000.0f / fastSpeed));
         if (glView != null) {
             glView.setFastTimeMs(fastTimeMs);
             glView.setFastSpeed(fastSpeed);
@@ -3506,8 +3511,8 @@ public class MainActivity extends Activity {
         } else if (mode == GLView.LensMode.FAST) {
             fastTimeMs = Math.max(100, Math.min(2000, durationMs));
             if (fastSpeed > 1.0f &&
-                    (fastSpeed - 1.0f) * fastTimeMs > 2000.0f)
-                fastSpeed = 1.0f + 2000.0f / fastTimeMs;
+                    fastSpeed * fastTimeMs > 2000.0f)
+                fastSpeed = 2000.0f / fastTimeMs;
             glView.setFastTimeMs(fastTimeMs);
             glView.setFastSpeed(fastSpeed);
             updateOverlay("Fast Time " + (fastTimeMs / 1000.0f) + " s");
