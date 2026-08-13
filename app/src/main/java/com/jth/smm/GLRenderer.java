@@ -1,7 +1,7 @@
 // ============================================================
 // Timetoy
 // File: GLRenderer.java
-// Version: v0.6.28
+// Version: v0.6.29
 // Build: 30 Hz Reverse Tape + Slice Stutter
 // Date: 2026-08-09
 // ============================================================
@@ -204,14 +204,7 @@ public class GLRenderer implements GLSurfaceView.Renderer {
                 cameraFpsWindowFrames = 0;
             }
             if (dubBufEnabled) captureCameraFrameToDubBuf();
-            if (historyEnabled) {
-                captureCameraFrameToHistory();
-                if (stutterEnabled) {
-                    view.onStutterFrameAdvanced(advanceStutterPlayback());
-                } else if (fastEnabled) {
-                    view.onFastFrameAdvanced(advanceFastPlayback());
-                }
-            }
+            if (historyEnabled) captureCameraFrameToHistory();
         } catch (Exception e) {
             android.util.Log.e("SlowMo240", "camera updateTexImage error: " + e);
         }

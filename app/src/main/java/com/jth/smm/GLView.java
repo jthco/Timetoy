@@ -1,7 +1,7 @@
 // ============================================================
 // Timetoy
 // File: GLView.java
-// Version: v0.6.28
+// Version: v0.6.29
 // Build: 30 Hz Reverse Tape + Slice Stutter
 // Date: 2026-08-09
 // ============================================================
@@ -177,7 +177,8 @@ public class GLView extends GLSurfaceView {
             renderer.beginStutter();
             requestRender();
         });
-        TraceLog.i("Stutter started camera-clocked slice historyMs=2000");
+        stutterHandler.post(stutterTick);
+        TraceLog.i("Stutter started slice-based; historyMs=2000");
     }
 
     public void setStutterTimeMs(int timeMs) {
@@ -209,7 +210,8 @@ public class GLView extends GLSurfaceView {
             renderer.beginFast();
             requestRender();
         });
-        TraceLog.i("Fast started camera-clocked historyMs=2000");
+        fastHandler.post(fastTick);
+        TraceLog.i("Fast started historyMs=2000");
     }
     public void setFastTimeMs(int timeMs) {
         if (renderer != null) queueEvent(() -> renderer.setFastTimeMs(timeMs));
@@ -217,23 +219,6 @@ public class GLView extends GLSurfaceView {
     public void setFastSpeed(float speed) {
         if (renderer != null) queueEvent(() -> renderer.setFastSpeed(speed));
     }
-
-    public void onStutterFrameAdvanced(boolean first) {
-        if (first && stutterFirstPlayback != null) {
-            Runnable r = stutterFirstPlayback;
-            stutterFirstPlayback = null;
-            post(r);
-        }
-    }
-
-    public void onFastFrameAdvanced(boolean first) {
-        if (first && fastFirstPlayback != null) {
-            Runnable r = fastFirstPlayback;
-            fastFirstPlayback = null;
-            post(r);
-        }
-    }
-
     public void stopFast() {
         fastRunning = false;
         fastHandler.removeCallbacks(fastTick);

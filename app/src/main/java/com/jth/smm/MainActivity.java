@@ -1,7 +1,7 @@
 // ============================================================
 // Timetoy
 // File: MainActivity.java
-// Version: v0.6.28
+// Version: v0.6.29
 // Build: Functional Rack + Mode Colours + Tape Timing
 // Date: 2026-08-09
 // ============================================================
@@ -37,7 +37,7 @@ public class MainActivity extends Activity {
     static final int SLOW_CAPTURE_FPS = 240;
     static final int REVERSE_CAPTURE_FPS = 120;
     static final String VERSION =
-            "v0.6.28";
+            "v0.6.29";
 
     static final int SLOW_PLAYBACK_FPS = 24;
     static final int SLOW_DECODE_MARGIN_MS = 0;
@@ -62,8 +62,6 @@ public class MainActivity extends Activity {
     static final int DEFAULT_RECORD_MS = 500;
 
     GLView glView;
-
-    static GLView.LensMode persistentMode = GLView.LensMode.DUBBUF_REVERSE;
 
     View recordingFrame;
     View recordCue;
@@ -302,6 +300,15 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    public void onConfigurationChanged(android.content.res.Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        TraceLog.i("Configuration changed orientation=" + newConfig.orientation +
+                "; engine preserved; HUD relayout only");
+        if (modeRail != null) { modeRail.requestLayout(); modeRail.invalidate(); }
+        if (hudPanel != null) { hudPanel.requestLayout(); hudPanel.invalidate(); }
+    }
+
+    @Override
     public void onCreate(Bundle b) {
         super.onCreate(b);
 
@@ -339,7 +346,7 @@ public class MainActivity extends Activity {
                 getResources().getConfiguration().orientation ==
                         android.content.res.Configuration.ORIENTATION_PORTRAIT
         );
-        glView.setLensMode(persistentMode);
+        glView.setLensMode(GLView.LensMode.DUBBUF_REVERSE);
 
         root.addView(
                 glView,
@@ -357,9 +364,6 @@ public class MainActivity extends Activity {
         buildWatermark(root);
         buildFlashLabel(root);
         buildSplash(root);
-        if (b != null && splashPanel != null) {
-            splashPanel.setVisibility(View.GONE);
-        }
 
         setContentView(root);
 
@@ -735,7 +739,7 @@ public class MainActivity extends Activity {
     void buildModeRail(FrameLayout root) {
         modeRail = new LinearLayout(this);
         modeRail.setOrientation(LinearLayout.VERTICAL);
-        modeRail.setPadding(dp(6), dp(6), dp(6), dp(6));
+        modeRail.setPadding(0, 0, 0, 0);
         modeRail.setBackgroundColor(0x66000000);
 
         railTT = makeRailText("TT");
@@ -767,8 +771,8 @@ public class MainActivity extends Activity {
         railShare.setOnClickListener(v -> flashStatus("Share — coming later", 900));
 
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                dp(64), -2, Gravity.TOP | Gravity.LEFT);
-        lp.setMargins(dp(10), dp(10), 0, 0);
+                180, -2, Gravity.TOP | Gravity.LEFT);
+        lp.setMargins(0, 0, 0, 0);
         root.addView(modeRail, lp);
         updateModeRail();
     }
@@ -781,7 +785,7 @@ public class MainActivity extends Activity {
         final PopupWindow[] holder = new PopupWindow[1];
         GridLayout box = new GridLayout(this);
         box.setColumnCount(3);
-        box.setPadding(dp(4), dp(4), dp(4), dp(4));
+        box.setPadding(0, 0, 0, 0);
         box.setBackgroundColor(0xee202020);
 
         for (int i = 0; i < labels.length; i++) {
@@ -792,7 +796,7 @@ public class MainActivity extends Activity {
             b.setTextSize(13);
             b.setMinHeight(0);
             b.setMinimumHeight(0);
-            b.setPadding(dp(8), dp(4), dp(8), dp(4));
+            b.setPadding(0, 0, 0, 0);
             if (colors != null && i < colors.length) {
                 b.setBackgroundColor(colors[i]);
                 b.setTextColor(0xff000000);
@@ -802,20 +806,22 @@ public class MainActivity extends Activity {
                 if (holder[0] != null) holder[0].dismiss();
             });
             GridLayout.LayoutParams bp = new GridLayout.LayoutParams();
-            bp.width = dp(120);
-            bp.height = dp(80);
-            bp.setMargins(dp(2), dp(2), dp(2), dp(2));
+            bp.width = 240; bp.height = 160;
+            bp.setMargins(0, 0, 0, 0);
             box.addView(b, bp);
         }
 
         PopupWindow popup = new PopupWindow(
-                box, dp(380), WindowManager.LayoutParams.WRAP_CONTENT, true);
+                box, 720, WindowManager.LayoutParams.WRAP_CONTENT, true);
         holder[0] = popup;
         popup.setBackgroundDrawable(
                 new android.graphics.drawable.ColorDrawable(0xee202020));
         popup.setOutsideTouchable(true);
         popup.setElevation(dp(6));
-        popup.showAsDropDown(anchor, dp(4), -anchor.getHeight());
+        int[] loc = new int[2];
+        anchor.getLocationOnScreen(loc);
+        popup.showAtLocation(anchor.getRootView(),
+                Gravity.TOP | Gravity.LEFT, 100, loc[1]);
     }
 
     void showModeChoices(View anchor) {
@@ -946,9 +952,10 @@ public class MainActivity extends Activity {
         v.setTextColor(0xffffffff);
         v.setTextSize(11);
         v.setGravity(Gravity.CENTER);
-        v.setPadding(dp(3), dp(3), dp(3), dp(3));
-        v.setSingleLine(false);
-        v.setLayoutParams(new LinearLayout.LayoutParams(dp(52), dp(78)));
+        v.setPadding(0, 0, 0, 0);
+        v.setMinWidth(0); v.setMinimumWidth(0);
+        v.setMinHeight(0); v.setMinimumHeight(0);
+        v.setLayoutParams(new LinearLayout.LayoutParams(180, 120));
         return v;
     }
 
@@ -1668,6 +1675,14 @@ public class MainActivity extends Activity {
 
                     if (item == currentItem &&
                             !item.started) {
+
+                        if (item.cycleId == 1) {
+                            flashStatus(
+                                    "READY",
+                                    600
+                            );
+                        }
+
                         startCurrentItem();
                     } else {
                         maybeHandoff();
@@ -3322,8 +3337,6 @@ public class MainActivity extends Activity {
     }
 
     void setLensMode(GLView.LensMode mode) {
-        if (mode == null) return;
-        persistentMode = mode;
         if (glView == null || glView.getLensMode() == mode) {
             return;
         }
@@ -3393,30 +3406,15 @@ public class MainActivity extends Activity {
             hideRecordCue();
             hideRecordProgress();
             setRecordingIndicator(false);
-            glView.stopDubBufReverse();
-            glView.stopStutter();
-            glView.stopFast();
             glView.releaseAllPlayers();
-
-            boolean needsNormalPreview =
-                    captureFps > 60 || captureWidth != 1280 || captureHeight != 720;
-            captureFps = 60;
-            captureWidth = 1280;
-            captureHeight = 720;
-            playbackFps = 60;
-            activeTestPreset = "FREEZE_720P60";
-
+            boolean needsNormalPreview = captureFps > 60 || captureWidth != 1280 || captureHeight != 720;
+            captureFps = 60; captureWidth = 1280; captureHeight = 720; playbackFps = 60;
+            activeTestPreset = "STROBE_720P60";
             glView.setLensMode(GLView.LensMode.FREEZE);
-            updateControlButtons();
-            updateOverlay("Freeze 5 Hz");
+            glView.startFreeze(5.0f);
+            updateSplashTitle(); updateControlButtons(); updateOverlay("Strobe 5 Hz");
             if (splashPanel != null) splashPanel.setVisibility(View.GONE);
-
-            if (needsNormalPreview) {
-                scheduleCameraRecovery("Freeze normal preview restart");
-            } else {
-                running = true;
-                glView.startFreeze(5.0f);
-            }
+            if (needsNormalPreview) scheduleCameraRecovery("Strobe normal preview restart");
             return;
         }
 
