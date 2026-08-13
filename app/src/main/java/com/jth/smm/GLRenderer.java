@@ -1,7 +1,7 @@
 // ============================================================
 // Timetoy
 // File: GLRenderer.java
-// Version: v0.6.27
+// Version: v0.6.28
 // Build: 30 Hz Reverse Tape + Slice Stutter
 // Date: 2026-08-09
 // ============================================================
@@ -49,7 +49,7 @@ public class GLRenderer implements GLSurfaceView.Renderer {
     // Camera2 preview arrives in sensor orientation. Apply this once at the
     // camera source so live preview and every effect inherit the same image.
     static final float CAMERA_LANDSCAPE_ROTATION_DEGREES = -90.0f;
-    static final float CAMERA_PORTRAIT_ROTATION_DEGREES = -180.0f;
+    static final float CAMERA_PORTRAIT_ROTATION_DEGREES = 0.0f;
     volatile boolean portraitOrientation = false;
     final float[] rawCameraMatrix = new float[16];
     final float[] cameraCorrectionMatrix = new float[16];
@@ -204,7 +204,14 @@ public class GLRenderer implements GLSurfaceView.Renderer {
                 cameraFpsWindowFrames = 0;
             }
             if (dubBufEnabled) captureCameraFrameToDubBuf();
-            if (historyEnabled) captureCameraFrameToHistory();
+            if (historyEnabled) {
+                captureCameraFrameToHistory();
+                if (stutterEnabled) {
+                    view.onStutterFrameAdvanced(advanceStutterPlayback());
+                } else if (fastEnabled) {
+                    view.onFastFrameAdvanced(advanceFastPlayback());
+                }
+            }
         } catch (Exception e) {
             android.util.Log.e("SlowMo240", "camera updateTexImage error: " + e);
         }

@@ -1,7 +1,7 @@
 // ============================================================
 // Timetoy
 // File: MainActivity.java
-// Version: v0.6.27
+// Version: v0.6.28
 // Build: Functional Rack + Mode Colours + Tape Timing
 // Date: 2026-08-09
 // ============================================================
@@ -37,7 +37,7 @@ public class MainActivity extends Activity {
     static final int SLOW_CAPTURE_FPS = 240;
     static final int REVERSE_CAPTURE_FPS = 120;
     static final String VERSION =
-            "v0.6.27";
+            "v0.6.28";
 
     static final int SLOW_PLAYBACK_FPS = 24;
     static final int SLOW_DECODE_MARGIN_MS = 0;
@@ -62,6 +62,8 @@ public class MainActivity extends Activity {
     static final int DEFAULT_RECORD_MS = 500;
 
     GLView glView;
+
+    static GLView.LensMode persistentMode = GLView.LensMode.DUBBUF_REVERSE;
 
     View recordingFrame;
     View recordCue;
@@ -337,7 +339,7 @@ public class MainActivity extends Activity {
                 getResources().getConfiguration().orientation ==
                         android.content.res.Configuration.ORIENTATION_PORTRAIT
         );
-        glView.setLensMode(GLView.LensMode.DUBBUF_REVERSE);
+        glView.setLensMode(persistentMode);
 
         root.addView(
                 glView,
@@ -355,6 +357,9 @@ public class MainActivity extends Activity {
         buildWatermark(root);
         buildFlashLabel(root);
         buildSplash(root);
+        if (b != null && splashPanel != null) {
+            splashPanel.setVisibility(View.GONE);
+        }
 
         setContentView(root);
 
@@ -762,7 +767,7 @@ public class MainActivity extends Activity {
         railShare.setOnClickListener(v -> flashStatus("Share — coming later", 900));
 
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                dp(122), -2, Gravity.TOP | Gravity.LEFT);
+                dp(64), -2, Gravity.TOP | Gravity.LEFT);
         lp.setMargins(dp(10), dp(10), 0, 0);
         root.addView(modeRail, lp);
         updateModeRail();
@@ -774,8 +779,8 @@ public class MainActivity extends Activity {
 
     void showChoicePopup(View anchor, String[] labels, Runnable[] actions, int[] colors) {
         final PopupWindow[] holder = new PopupWindow[1];
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
+        GridLayout box = new GridLayout(this);
+        box.setColumnCount(3);
         box.setPadding(dp(4), dp(4), dp(4), dp(4));
         box.setBackgroundColor(0xee202020);
 
@@ -796,11 +801,15 @@ public class MainActivity extends Activity {
                 if (actions[index] != null) actions[index].run();
                 if (holder[0] != null) holder[0].dismiss();
             });
-            box.addView(b, new LinearLayout.LayoutParams(dp(170), dp(44)));
+            GridLayout.LayoutParams bp = new GridLayout.LayoutParams();
+            bp.width = dp(120);
+            bp.height = dp(80);
+            bp.setMargins(dp(2), dp(2), dp(2), dp(2));
+            box.addView(b, bp);
         }
 
         PopupWindow popup = new PopupWindow(
-                box, dp(178), WindowManager.LayoutParams.WRAP_CONTENT, true);
+                box, dp(380), WindowManager.LayoutParams.WRAP_CONTENT, true);
         holder[0] = popup;
         popup.setBackgroundDrawable(
                 new android.graphics.drawable.ColorDrawable(0xee202020));
@@ -935,10 +944,11 @@ public class MainActivity extends Activity {
         TextView v = new TextView(this);
         v.setText(text);
         v.setTextColor(0xffffffff);
-        v.setTextSize(14);
-        v.setGravity(Gravity.LEFT | Gravity.CENTER_VERTICAL);
-        v.setPadding(dp(6), dp(5), dp(6), dp(5));
-        v.setMinHeight(dp(34));
+        v.setTextSize(11);
+        v.setGravity(Gravity.CENTER);
+        v.setPadding(dp(3), dp(3), dp(3), dp(3));
+        v.setSingleLine(false);
+        v.setLayoutParams(new LinearLayout.LayoutParams(dp(52), dp(78)));
         return v;
     }
 
@@ -1658,14 +1668,6 @@ public class MainActivity extends Activity {
 
                     if (item == currentItem &&
                             !item.started) {
-
-                        if (item.cycleId == 1) {
-                            flashStatus(
-                                    "READY",
-                                    600
-                            );
-                        }
-
                         startCurrentItem();
                     } else {
                         maybeHandoff();
@@ -3320,6 +3322,8 @@ public class MainActivity extends Activity {
     }
 
     void setLensMode(GLView.LensMode mode) {
+        if (mode == null) return;
+        persistentMode = mode;
         if (glView == null || glView.getLensMode() == mode) {
             return;
         }
@@ -3389,15 +3393,30 @@ public class MainActivity extends Activity {
             hideRecordCue();
             hideRecordProgress();
             setRecordingIndicator(false);
+            glView.stopDubBufReverse();
+            glView.stopStutter();
+            glView.stopFast();
             glView.releaseAllPlayers();
-            boolean needsNormalPreview = captureFps > 60 || captureWidth != 1280 || captureHeight != 720;
-            captureFps = 60; captureWidth = 1280; captureHeight = 720; playbackFps = 60;
-            activeTestPreset = "STROBE_720P60";
+
+            boolean needsNormalPreview =
+                    captureFps > 60 || captureWidth != 1280 || captureHeight != 720;
+            captureFps = 60;
+            captureWidth = 1280;
+            captureHeight = 720;
+            playbackFps = 60;
+            activeTestPreset = "FREEZE_720P60";
+
             glView.setLensMode(GLView.LensMode.FREEZE);
-            glView.startFreeze(5.0f);
-            updateSplashTitle(); updateControlButtons(); updateOverlay("Strobe 5 Hz");
+            updateControlButtons();
+            updateOverlay("Freeze 5 Hz");
             if (splashPanel != null) splashPanel.setVisibility(View.GONE);
-            if (needsNormalPreview) scheduleCameraRecovery("Strobe normal preview restart");
+
+            if (needsNormalPreview) {
+                scheduleCameraRecovery("Freeze normal preview restart");
+            } else {
+                running = true;
+                glView.startFreeze(5.0f);
+            }
             return;
         }
 
