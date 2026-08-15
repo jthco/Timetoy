@@ -1,7 +1,7 @@
 // ============================================================
 // Timetoy
 // File: GLRenderer.java
-// Version: v0.6.29
+// Version: v0.6.30
 // Build: 30 Hz Reverse Tape + Slice Stutter
 // Date: 2026-08-09
 // ============================================================
@@ -16,7 +16,7 @@ import android.view.Surface;
 public class GLRenderer implements GLSurfaceView.Renderer {
     static final int GL_TEXTURE_EXTERNAL_OES = 0x8D65;
     final GLView view;
-    int extProgram, tex2dProgram;
+    int extProgram, tex2dProgram, ramYuvProgram;
     int cameraTexId;
     final int[] decoderTexIds = new int[2];
     static final int MAX_REVERSE_FRAMES = 480;
@@ -49,7 +49,7 @@ public class GLRenderer implements GLSurfaceView.Renderer {
     // Camera2 preview arrives in sensor orientation. Apply this once at the
     // camera source so live preview and every effect inherit the same image.
     static final float CAMERA_LANDSCAPE_ROTATION_DEGREES = -90.0f;
-    static final float CAMERA_PORTRAIT_ROTATION_DEGREES = 0.0f;
+    static final float CAMERA_PORTRAIT_ROTATION_DEGREES = -180.0f;
     volatile boolean portraitOrientation = false;
     final float[] rawCameraMatrix = new float[16];
     final float[] cameraCorrectionMatrix = new float[16];
@@ -80,6 +80,12 @@ public class GLRenderer implements GLSurfaceView.Renderer {
     int fastCycle = 0;
     long fastAnchorNewestSequence = -1L;
 
+    RamFrameBuffer ramBuffer;
+    final int[] ramYuvTexIds = new int[3];
+    java.nio.ByteBuffer ramYUpload, ramUUpload, ramVUpload;
+    int ramUploadWidth, ramUploadHeight;
+    long ramOffsetMs;
+    boolean ramVisible;
 
     int freezeTexId;
     int freezeWidth;
@@ -122,6 +128,7 @@ public class GLRenderer implements GLSurfaceView.Renderer {
                                            javax.microedition.khronos.egl.EGLConfig config) {
         extProgram = makeProgram(VERT, FRAG_EXT);
         tex2dProgram = makeProgram(VERT, FRAG_2D);
+        ramYuvProgram = makeProgram(VERT, FRAG_YUV);
         cameraTexId = makeExternalTexture();
         cameraSource = new SimpleTextureSource(cameraTexId, GL_TEXTURE_EXTERNAL_OES);
         updateCameraCorrectionMatrix();
@@ -182,7 +189,8 @@ public class GLRenderer implements GLSurfaceView.Renderer {
         GLES20.glViewport(0, 0, screenW, screenH);
         GLES20.glClearColor(0f,0f,0f,1f);
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
-        drawTexture(currentSource);
+        if (ramVisible) drawRamYuv();
+        else drawTexture(currentSource);
         glCheck("onDrawFrame");
     }
 
@@ -689,10 +697,113 @@ public class GLRenderer implements GLSurfaceView.Renderer {
     }
 
     public void showCameraOutput() {
+        ramVisible = false;
         visibleDecoderSlot = -1; currentSource = cameraSource; report = "Showing camera output";
+    }
+
+    public void setRamBuffer(RamFrameBuffer buffer) {
+        ramBuffer = buffer;
+    }
+
+    public void showRamOffsetMs(long offsetMs) {
+        if (ramBuffer == null || ramBuffer.getCount() <= 0) {
+            showCameraOutput();
+            return;
+        }
+        ramOffsetMs = Math.min(0L, offsetMs);
+        ramVisible = true;
+        visibleDecoderSlot = -6;
+        uploadRamFrame();
+        report = "RAM Scrub " + ramOffsetMs + " ms";
+    }
+
+    private void ensureRamTextures(int width, int height) {
+        if (width <= 0 || height <= 0) return;
+        if (ramYuvTexIds[0] != 0 &&
+                ramUploadWidth == width && ramUploadHeight == height) return;
+
+        if (ramYuvTexIds[0] != 0) {
+            GLES20.glDeleteTextures(3, ramYuvTexIds, 0);
+            ramYuvTexIds[0] = ramYuvTexIds[1] = ramYuvTexIds[2] = 0;
+        }
+
+        GLES20.glGenTextures(3, ramYuvTexIds, 0);
+        int[] widths = {width, width / 2, width / 2};
+        int[] heights = {height, height / 2, height / 2};
+        for (int i = 0; i < 3; i++) {
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, ramYuvTexIds[i]);
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
+            GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+            GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_LUMINANCE,
+                    widths[i], heights[i], 0,
+                    GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, null);
+        }
+
+        ramYUpload = java.nio.ByteBuffer.allocateDirect(width * height);
+        ramUUpload = java.nio.ByteBuffer.allocateDirect(width * height / 4);
+        ramVUpload = java.nio.ByteBuffer.allocateDirect(width * height / 4);
+        ramUploadWidth = width;
+        ramUploadHeight = height;
+    }
+
+    private void uploadRamFrame() {
+        if (ramBuffer == null) return;
+        int width = ramBuffer.getWidth();
+        int height = ramBuffer.getHeight();
+        if (width <= 0 || height <= 0) return;
+        ensureRamTextures(width, height);
+
+        if (!ramBuffer.copyFrameAtOffsetMs(
+                ramOffsetMs, ramYUpload, ramUUpload, ramVUpload)) return;
+
+        java.nio.ByteBuffer[] data = {ramYUpload, ramUUpload, ramVUpload};
+        int[] widths = {width, width / 2, width / 2};
+        int[] heights = {height, height / 2, height / 2};
+        for (int i = 0; i < 3; i++) {
+            data[i].position(0);
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, ramYuvTexIds[i]);
+            GLES20.glTexSubImage2D(GLES20.GL_TEXTURE_2D, 0, 0, 0,
+                    widths[i], heights[i],
+                    GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, data[i]);
+        }
+    }
+
+    private void drawRamYuv() {
+        if (ramYuvTexIds[0] == 0) {
+            drawTexture(cameraSource);
+            return;
+        }
+        GLES20.glUseProgram(ramYuvProgram);
+        int aPos = GLES20.glGetAttribLocation(ramYuvProgram, "aPosition");
+        int aTex = GLES20.glGetAttribLocation(ramYuvProgram, "aTexCoord");
+        int uMatrix = GLES20.glGetUniformLocation(ramYuvProgram, "uTexMatrix");
+
+        vertexBuffer.position(0);
+        GLES20.glVertexAttribPointer(aPos, 2, GLES20.GL_FLOAT, false, 16, vertexBuffer);
+        GLES20.glEnableVertexAttribArray(aPos);
+        vertexBuffer.position(2);
+        GLES20.glVertexAttribPointer(aTex, 2, GLES20.GL_FLOAT, false, 16, vertexBuffer);
+        GLES20.glEnableVertexAttribArray(aTex);
+        GLES20.glUniformMatrix4fv(uMatrix, 1, false, cameraSource.transform(), 0);
+
+        int[] uniforms = {
+                GLES20.glGetUniformLocation(ramYuvProgram, "sY"),
+                GLES20.glGetUniformLocation(ramYuvProgram, "sU"),
+                GLES20.glGetUniformLocation(ramYuvProgram, "sV")
+        };
+        for (int i = 0; i < 3; i++) {
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0 + i);
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, ramYuvTexIds[i]);
+            GLES20.glUniform1i(uniforms[i], i);
+        }
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
     }
     public void setPlaybackGain(float gain) { playbackGain = gain; report = "Playback gain " + gain + "x"; }
     public String stateText() {
+        if (visibleDecoderSlot == -6) return "SCRUB";
         if (visibleDecoderSlot == -5) return "FAST";
         if (visibleDecoderSlot == -4) return "STUTTER";
         if (visibleDecoderSlot == -3) return "DUBBUF";
@@ -780,4 +891,18 @@ public class GLRenderer implements GLSurfaceView.Renderer {
     static final String VERT="attribute vec4 aPosition;\nattribute vec4 aTexCoord;\nuniform mat4 uTexMatrix;\nvarying vec2 vTexCoord;\nvoid main(){\n gl_Position=aPosition;\n vTexCoord=(uTexMatrix*aTexCoord).xy;\n}\n";
     static final String FRAG_EXT="#extension GL_OES_EGL_image_external : require\nprecision mediump float;\nuniform samplerExternalOES sTexture;\nuniform float uGain;\nvarying vec2 vTexCoord;\nvoid main(){\n vec4 c=texture2D(sTexture,vTexCoord);\n c.rgb=clamp(c.rgb*uGain,0.0,1.0);\n gl_FragColor=c;\n}\n";
     static final String FRAG_2D="precision mediump float;\nuniform sampler2D sTexture;\nuniform float uGain;\nvarying vec2 vTexCoord;\nvoid main(){\n vec4 c=texture2D(sTexture,vTexCoord);\n c.rgb=clamp(c.rgb*uGain,0.0,1.0);\n gl_FragColor=c;\n}\n";
+    static final String FRAG_YUV =
+            "precision mediump float;\n" +
+            "uniform sampler2D sY;\n" +
+            "uniform sampler2D sU;\n" +
+            "uniform sampler2D sV;\n" +
+            "varying vec2 vTexCoord;\n" +
+            "void main(){\n" +
+            " float y=texture2D(sY,vTexCoord).r;\n" +
+            " float u=texture2D(sU,vTexCoord).r-0.5;\n" +
+            " float v=texture2D(sV,vTexCoord).r-0.5;\n" +
+            " vec3 rgb=vec3(y+1.402*v, y-0.344136*u-0.714136*v, y+1.772*u);\n" +
+            " gl_FragColor=vec4(clamp(rgb,0.0,1.0),1.0);\n" +
+            "}\n";
+
 }

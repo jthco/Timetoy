@@ -1,7 +1,7 @@
 // ============================================================
 // Timetoy
 // File: MainActivity.java
-// Version: v0.6.29
+// Version: v0.6.30
 // Build: Functional Rack + Mode Colours + Tape Timing
 // Date: 2026-08-09
 // ============================================================
@@ -20,6 +20,9 @@ import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.MediaCodec;
 import android.media.MediaExtractor;
 import android.media.MediaFormat;
+import android.media.Image;
+import android.media.ImageReader;
+import android.graphics.ImageFormat;
 import android.util.Range;
 import android.util.Size;
 import android.view.*;
@@ -37,7 +40,7 @@ public class MainActivity extends Activity {
     static final int SLOW_CAPTURE_FPS = 240;
     static final int REVERSE_CAPTURE_FPS = 120;
     static final String VERSION =
-            "v0.6.29";
+            "v0.6.30";
 
     static final int SLOW_PLAYBACK_FPS = 24;
     static final int SLOW_DECODE_MARGIN_MS = 0;
@@ -51,6 +54,7 @@ public class MainActivity extends Activity {
     static final int MODE_FAST    = 0xff168a3f;
     static final int MODE_FREEZE  = 0xff20dfe5;
     static final int MODE_STUTTER = 0xffffdf20;
+    static final int MODE_SCRUB   = TIMETOY_VIOLET;
     static final int STANDARD_REVERSE_RECORD_MS = 1600;
     static final int STANDARD_REVERSE_PLAYBACK_MS = 1000;
     static final int TEST_REVERSE_MS = 4000;
@@ -80,6 +84,9 @@ public class MainActivity extends Activity {
     LinearLayout timeControlRow, slowControlRow, stutterSlicesRow, freezeRateRow, fastSpeedRow;
     LinearLayout modeRail;
     TextView railTT, railView, railTime, railParam, railFX, railShare;
+    LinearLayout scrubPanel;
+    TextView scrubLeftLabel, scrubRightLabel, scrubPositionLabel;
+    SeekBar scrubSeek;
     Button slices2Button, slices4Button, slices6Button, slices8Button;
     Button fast1Button, fast15Button, fast2Button, fast3Button, fast4Button;
 
@@ -170,6 +177,11 @@ public class MainActivity extends Activity {
 
     SurfaceTexture cameraTexture;
     Surface previewSurface;
+
+    RamFrameBuffer ramBuffer;
+    ImageReader ramReader;
+    boolean ramScrubbing = false;
+    long ramSelectedOffsetMs = 0L;
 
     MediaSurfaceRecorder recorder;
 
@@ -267,6 +279,7 @@ public class MainActivity extends Activity {
                 public void run() {
                     hudTicks++;
                     refreshOverlay();
+                    updateScrubUi();
 
                     hudHandler.postDelayed(
                             this,
@@ -297,15 +310,6 @@ public class MainActivity extends Activity {
             this.file = file;
             this.outputFps = outputFps;
         }
-    }
-
-    @Override
-    public void onConfigurationChanged(android.content.res.Configuration newConfig) {
-        super.onConfigurationChanged(newConfig);
-        TraceLog.i("Configuration changed orientation=" + newConfig.orientation +
-                "; engine preserved; HUD relayout only");
-        if (modeRail != null) { modeRail.requestLayout(); modeRail.invalidate(); }
-        if (hudPanel != null) { hudPanel.requestLayout(); hudPanel.invalidate(); }
     }
 
     @Override
@@ -361,6 +365,7 @@ public class MainActivity extends Activity {
         buildRecordProgress(root);
         buildHud(root);
         buildModeRail(root);
+        buildScrubControl(root);
         buildWatermark(root);
         buildFlashLabel(root);
         buildSplash(root);
@@ -736,10 +741,87 @@ public class MainActivity extends Activity {
         });
     }
 
+    void buildScrubControl(FrameLayout root) {
+        scrubPanel = new LinearLayout(this);
+        scrubPanel.setOrientation(LinearLayout.VERTICAL);
+        scrubPanel.setPadding(dp(12), dp(8), dp(12), dp(8));
+        scrubPanel.setBackgroundColor(0xaa000000);
+
+        LinearLayout labels = new LinearLayout(this);
+        labels.setOrientation(LinearLayout.HORIZONTAL);
+
+        scrubLeftLabel = new TextView(this);
+        scrubLeftLabel.setText("-0.0 s");
+        scrubLeftLabel.setTextColor(0xffffffff);
+        scrubLeftLabel.setTextSize(14);
+
+        scrubPositionLabel = new TextView(this);
+        scrubPositionLabel.setText("LIVE");
+        scrubPositionLabel.setTextColor(0xffcccccc);
+        scrubPositionLabel.setTextSize(13);
+        scrubPositionLabel.setGravity(Gravity.CENTER);
+
+        scrubRightLabel = new TextView(this);
+        scrubRightLabel.setText("0 s");
+        scrubRightLabel.setTextColor(0xffffffff);
+        scrubRightLabel.setTextSize(14);
+        scrubRightLabel.setGravity(Gravity.RIGHT);
+
+        labels.addView(scrubLeftLabel, new LinearLayout.LayoutParams(0, -2, 1f));
+        labels.addView(scrubPositionLabel, new LinearLayout.LayoutParams(0, -2, 1f));
+        labels.addView(scrubRightLabel, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        scrubSeek = new SeekBar(this);
+        scrubSeek.setMax(1000);
+        scrubSeek.setProgress(1000);
+        scrubSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onStartTrackingTouch(SeekBar seekBar) { ramScrubbing = true; }
+
+            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                if (!fromUser || ramBuffer == null) return;
+                double history = ramBuffer.getHistorySeconds();
+                long offsetMs = -Math.round(history * 1000.0 * (1000 - progress) / 1000.0);
+                ramSelectedOffsetMs = offsetMs;
+
+                if (progress >= 999) {
+                    scrubPositionLabel.setText("LIVE");
+                    if (glView != null) glView.showRamLive();
+                } else {
+                    scrubPositionLabel.setText(
+                            String.format(Locale.US, "%.1f s", offsetMs / 1000.0));
+                    if (glView != null) glView.showRamOffsetMs(offsetMs);
+                }
+            }
+
+            @Override public void onStopTrackingTouch(SeekBar seekBar) { ramScrubbing = false; }
+        });
+
+        scrubPanel.addView(labels);
+        scrubPanel.addView(scrubSeek);
+
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                -1, -2, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        lp.setMargins(dp(16), 0, dp(16), dp(18));
+        root.addView(scrubPanel, lp);
+        scrubPanel.setVisibility(View.GONE);
+    }
+
+    void updateScrubUi() {
+        if (scrubPanel == null) return;
+        boolean active = glView != null && glView.getLensMode() == GLView.LensMode.SCRUB;
+        scrubPanel.setVisibility(active ? View.VISIBLE : View.GONE);
+        if (!active) return;
+
+        double history = ramBuffer == null ? 0.0 : ramBuffer.getHistorySeconds();
+        scrubLeftLabel.setText(String.format(Locale.US, "-%.1f s", history));
+        scrubRightLabel.setText("0 s");
+        if (!ramScrubbing && scrubSeek.getProgress() >= 999) scrubPositionLabel.setText("LIVE");
+    }
+
     void buildModeRail(FrameLayout root) {
         modeRail = new LinearLayout(this);
         modeRail.setOrientation(LinearLayout.VERTICAL);
-        modeRail.setPadding(0, 0, 0, 0);
+        modeRail.setPadding(dp(6), dp(6), dp(6), dp(6));
         modeRail.setBackgroundColor(0x66000000);
 
         railTT = makeRailText("TT");
@@ -771,8 +853,8 @@ public class MainActivity extends Activity {
         railShare.setOnClickListener(v -> flashStatus("Share — coming later", 900));
 
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                180, -2, Gravity.TOP | Gravity.LEFT);
-        lp.setMargins(0, 0, 0, 0);
+                dp(122), -2, Gravity.TOP | Gravity.LEFT);
+        lp.setMargins(dp(10), dp(10), 0, 0);
         root.addView(modeRail, lp);
         updateModeRail();
     }
@@ -783,9 +865,9 @@ public class MainActivity extends Activity {
 
     void showChoicePopup(View anchor, String[] labels, Runnable[] actions, int[] colors) {
         final PopupWindow[] holder = new PopupWindow[1];
-        GridLayout box = new GridLayout(this);
-        box.setColumnCount(3);
-        box.setPadding(0, 0, 0, 0);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(4), dp(4), dp(4), dp(4));
         box.setBackgroundColor(0xee202020);
 
         for (int i = 0; i < labels.length; i++) {
@@ -796,7 +878,7 @@ public class MainActivity extends Activity {
             b.setTextSize(13);
             b.setMinHeight(0);
             b.setMinimumHeight(0);
-            b.setPadding(0, 0, 0, 0);
+            b.setPadding(dp(8), dp(4), dp(8), dp(4));
             if (colors != null && i < colors.length) {
                 b.setBackgroundColor(colors[i]);
                 b.setTextColor(0xff000000);
@@ -805,37 +887,32 @@ public class MainActivity extends Activity {
                 if (actions[index] != null) actions[index].run();
                 if (holder[0] != null) holder[0].dismiss();
             });
-            GridLayout.LayoutParams bp = new GridLayout.LayoutParams();
-            bp.width = 240; bp.height = 160;
-            bp.setMargins(0, 0, 0, 0);
-            box.addView(b, bp);
+            box.addView(b, new LinearLayout.LayoutParams(dp(170), dp(44)));
         }
 
         PopupWindow popup = new PopupWindow(
-                box, 720, WindowManager.LayoutParams.WRAP_CONTENT, true);
+                box, dp(178), WindowManager.LayoutParams.WRAP_CONTENT, true);
         holder[0] = popup;
         popup.setBackgroundDrawable(
                 new android.graphics.drawable.ColorDrawable(0xee202020));
         popup.setOutsideTouchable(true);
         popup.setElevation(dp(6));
-        int[] loc = new int[2];
-        anchor.getLocationOnScreen(loc);
-        popup.showAtLocation(anchor.getRootView(),
-                Gravity.TOP | Gravity.LEFT, 100, loc[1]);
+        popup.showAsDropDown(anchor, dp(4), -anchor.getHeight());
     }
 
     void showModeChoices(View anchor) {
         showChoicePopup(anchor,
-                new String[]{"REVERSE", "SLOW", "FAST", "FREEZE", "STUTTER"},
+                new String[]{"REVERSE", "SLOW", "FAST", "FREEZE", "STUTTER", "SCRUB"},
                 new Runnable[]{
                         () -> setLensMode(GLView.LensMode.DUBBUF_REVERSE),
                         () -> setLensMode(GLView.LensMode.SLOW),
                         () -> setLensMode(GLView.LensMode.FAST),
                         () -> setLensMode(GLView.LensMode.FREEZE),
-                        () -> setLensMode(GLView.LensMode.STUTTER)
+                        () -> setLensMode(GLView.LensMode.STUTTER),
+                        () -> setLensMode(GLView.LensMode.SCRUB)
                 },
                 new int[]{
-                        MODE_REVERSE, MODE_SLOW, MODE_FAST, MODE_FREEZE, MODE_STUTTER
+                        MODE_REVERSE, MODE_SLOW, MODE_FAST, MODE_FREEZE, MODE_STUTTER, MODE_SCRUB
                 });
     }
 
@@ -921,6 +998,7 @@ public class MainActivity extends Activity {
             case FAST: return MODE_FAST;
             case FREEZE: return MODE_FREEZE;
             case STUTTER: return MODE_STUTTER;
+            case SCRUB: return MODE_SCRUB;
             default: return MODE_REVERSE;
         }
     }
@@ -950,12 +1028,10 @@ public class MainActivity extends Activity {
         TextView v = new TextView(this);
         v.setText(text);
         v.setTextColor(0xffffffff);
-        v.setTextSize(11);
-        v.setGravity(Gravity.CENTER);
-        v.setPadding(0, 0, 0, 0);
-        v.setMinWidth(0); v.setMinimumWidth(0);
-        v.setMinHeight(0); v.setMinimumHeight(0);
-        v.setLayoutParams(new LinearLayout.LayoutParams(180, 120));
+        v.setTextSize(14);
+        v.setGravity(Gravity.LEFT | Gravity.CENTER_VERTICAL);
+        v.setPadding(dp(6), dp(5), dp(6), dp(5));
+        v.setMinHeight(dp(34));
         return v;
     }
 
@@ -971,7 +1047,11 @@ public class MainActivity extends Activity {
         String time = "";
         String factor = "—";
 
-        if (m == GLView.LensMode.SLOW) {
+        if (m == GLView.LensMode.SCRUB) {
+            time = ramBuffer == null
+                    ? "0.0 s"
+                    : String.format(Locale.US, "%.1f s", ramBuffer.getHistorySeconds());
+        } else if (m == GLView.LensMode.SLOW) {
             time = formatSeconds(slowPlaybackMs);
             factor = slowFactor + "×";
         } else if (m == GLView.LensMode.DUBBUF_REVERSE) {
@@ -1393,6 +1473,18 @@ public class MainActivity extends Activity {
         }
 
         running = true;
+        if (glView.getLensMode() == GLView.LensMode.SCRUB) {
+            updateOverlay("Starting RAM Scrub 1080p60");
+            startRamPreviewSession(() -> {
+                glView.setRamBuffer(ramBuffer);
+                glView.showRamLive();
+                updateScrubUi();
+                TraceLog.i("RAM Scrub active; hide splash");
+                hideSplashAfterFirstFrame();
+            });
+            return;
+        }
+
         if (glView.getLensMode() == GLView.LensMode.DUBBUF_REVERSE) {
             updateOverlay("Starting DubBuf preview");
             startPreviewOnlySession(() -> glView.startDubBufReverse(reversePlaybackMs, () -> {
@@ -2026,6 +2118,93 @@ public class MainActivity extends Activity {
 
 
 
+    void startRamPreviewSession(Runnable onReady) {
+        if (cameraDevice == null || previewSurface == null) {
+            if (onReady != null) onReady.run();
+            return;
+        }
+
+        closeRamCapture();
+
+        try {
+            ramBuffer = new RamFrameBuffer();
+            ramReader = ImageReader.newInstance(1920, 1080, ImageFormat.YUV_420_888, 4);
+
+            ramReader.setOnImageAvailableListener(reader -> {
+                Image image = null;
+                long beginNs = System.nanoTime();
+                try {
+                    image = reader.acquireNextImage();
+                    if (image != null && ramBuffer != null) ramBuffer.addImage(image);
+                } catch (Throwable t) {
+                    TraceLog.e("RAM frame copy failed",
+                            t instanceof Exception ? (Exception)t : new RuntimeException(t));
+                } finally {
+                    if (image != null) try { image.close(); } catch (Exception ignored) {}
+                }
+                long copyNs = System.nanoTime() - beginNs;
+                if (copyNs >= 10_000_000L)
+                    TraceLog.i("RAM copy slow ms=" + (copyNs / 1_000_000.0));
+            }, cameraHandler);
+
+            if (session != null) {
+                try { session.close(); } catch (Exception ignored) {}
+                session = null;
+            }
+
+            ArrayList<Surface> surfaces = new ArrayList<>();
+            surfaces.add(previewSurface);
+            surfaces.add(ramReader.getSurface());
+
+            cameraDevice.createCaptureSession(
+                    surfaces,
+                    new CameraCaptureSession.StateCallback() {
+                        @Override public void onConfigured(CameraCaptureSession s) {
+                            try {
+                                session = s;
+                                recordingSessionConfigured = false;
+
+                                CaptureRequest.Builder b =
+                                        cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
+                                b.addTarget(previewSurface);
+                                b.addTarget(ramReader.getSurface());
+                                b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                                        new Range<Integer>(60, 60));
+                                b.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
+                                b.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
+                                applyCameraZoom(b, cameraZoom);
+
+                                s.setRepeatingRequest(
+                                        b.build(), frameAuditCaptureCallback, cameraHandler);
+                                TraceLog.i("RAM preview session active 1920x1080@60 targets=preview+YUV");
+                                if (onReady != null) mainHandler.post(onReady);
+                            } catch (Exception e) {
+                                TraceLog.e("RAM session configure error", e);
+                            }
+                        }
+
+                        @Override public void onConfigureFailed(CameraCaptureSession s) {
+                            TraceLog.i("RAM preview session failed");
+                            updateOverlay("RAM 1080p60 stream combination failed");
+                        }
+                    },
+                    cameraHandler
+            );
+        } catch (Exception e) {
+            TraceLog.e("startRamPreviewSession failed", e);
+            updateOverlay("RAM Scrub start failed: " + e);
+        }
+    }
+
+    void closeRamCapture() {
+        if (ramReader != null) {
+            try { ramReader.close(); } catch (Exception ignored) {}
+            ramReader = null;
+        }
+        if (ramBuffer != null) ramBuffer.clear();
+        if (glView != null) glView.setRamBuffer(null);
+    }
+
     void startPreviewOnlySession(Runnable onReady) {
         if (cameraDevice == null || previewSurface == null) { if (onReady != null) onReady.run(); return; }
         try {
@@ -2509,6 +2688,7 @@ public class MainActivity extends Activity {
     }
 
     void releasePersistentRecordingPipeline() {
+        closeRamCapture();
         recordingSessionConfigured = false;
         recordingSessionCreating = false;
         busyRecording = false;
@@ -3059,8 +3239,12 @@ public class MainActivity extends Activity {
                                 wantedSize
                         );
 
+                boolean ramSupported = glView == null ||
+                        glView.getLensMode() != GLView.LensMode.SCRUB ||
+                        containsSize(map.getOutputSizes(ImageFormat.YUV_420_888), wantedSize);
+
                 if (previewSupported &&
-                        encoderSupported) {
+                        encoderSupported && ramSupported) {
                     TraceLog.i(
                             "Normal capture camera=" +
                                     id +
@@ -3349,6 +3533,32 @@ public class MainActivity extends Activity {
             updateControlButtons(); updateOverlay("Reverse; restarting");
             if (splashPanel != null) splashPanel.setVisibility(View.GONE);
             scheduleCameraRecovery("DubBuf mode restart");
+            return;
+        }
+
+        if (mode == GLView.LensMode.SCRUB) {
+            running = false;
+            recordingFollowing = false;
+            pendingRecordingCycleId = -1;
+            loadingCycleId = -1;
+            glView.stopFreeze();
+            glView.stopDubBufReverse();
+            glView.stopStutter();
+            glView.stopFast();
+            glView.releaseAllPlayers();
+            glView.setLensMode(mode);
+            captureFps = 60;
+            captureWidth = 1920;
+            captureHeight = 1080;
+            playbackFps = 60;
+            activeTestPreset = "RAM_SCRUB_1080P60";
+            ramSelectedOffsetMs = 0L;
+            if (scrubSeek != null) scrubSeek.setProgress(1000);
+            updateControlButtons();
+            updateScrubUi();
+            updateOverlay("Scrub RAM 1080p60; restarting");
+            if (splashPanel != null) splashPanel.setVisibility(View.GONE);
+            scheduleCameraRecovery("Scrub RAM mode restart");
             return;
         }
 
@@ -3654,6 +3864,7 @@ public class MainActivity extends Activity {
         if (glView.getLensMode() == GLView.LensMode.FREEZE) return "Freeze";
         if (glView.getLensMode() == GLView.LensMode.STUTTER) return "Stutter";
         if (glView.getLensMode() == GLView.LensMode.FAST) return "Fast";
+        if (glView.getLensMode() == GLView.LensMode.SCRUB) return "Scrub";
         return "Reverse";
     }
 
