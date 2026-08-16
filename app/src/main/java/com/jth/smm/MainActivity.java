@@ -1,7 +1,7 @@
 // ============================================================
 // Timetoy
 // File: MainActivity.java
-// Version: v0.6.30
+// Version: v0.6.32
 // Build: Functional Rack + Mode Colours + Tape Timing
 // Date: 2026-08-09
 // ============================================================
@@ -40,7 +40,7 @@ public class MainActivity extends Activity {
     static final int SLOW_CAPTURE_FPS = 240;
     static final int REVERSE_CAPTURE_FPS = 120;
     static final String VERSION =
-            "v0.6.31";
+            "v0.6.32";
 
     static final int SLOW_PLAYBACK_FPS = 24;
     static final int SLOW_DECODE_MARGIN_MS = 0;
@@ -56,6 +56,7 @@ public class MainActivity extends Activity {
     static final int MODE_STUTTER = 0xffffdf20;
     static final int MODE_SCRUB   = TIMETOY_VIOLET;
     static final int MODE_REWIND  = TIMETOY_ORANGE;
+    static final int MODE_RAMREV  = MODE_REVERSE;
     static final int STANDARD_REVERSE_RECORD_MS = 1600;
     static final int STANDARD_REVERSE_PLAYBACK_MS = 1000;
     static final int TEST_REVERSE_MS = 4000;
@@ -189,6 +190,9 @@ public class MainActivity extends Activity {
     boolean rewindAtLimit = false;
     double rewindDelayMs = 0.0;
     long rewindLastTickMs = 0L;
+
+    static final long RAMREV_BLOCK_MS = 1000L;
+    long ramRevCycleStartMs = 0L;
 
     MediaSurfaceRecorder recorder;
 
@@ -373,6 +377,49 @@ public class MainActivity extends Activity {
         updateOverlay("Rewind forward 3x");
     }
 
+    final Runnable ramRevTick = new Runnable() {
+        @Override public void run() {
+            if (glView == null ||
+                    glView.getLensMode() != GLView.LensMode.RAMREV) {
+                ramRevCycleStartMs = 0L;
+                return;
+            }
+
+            if (ramBuffer == null ||
+                    ramBuffer.getHistorySeconds() < 2.05) {
+                glView.showRamLive();
+                mainHandler.postDelayed(this, 1000L / 60L);
+                return;
+            }
+
+            long now = SystemClock.elapsedRealtime();
+
+            if (ramRevCycleStartMs == 0L) {
+                ramRevCycleStartMs = now;
+            }
+
+            long elapsed = now - ramRevCycleStartMs;
+
+            if (elapsed >= RAMREV_BLOCK_MS) {
+                ramRevCycleStartMs +=
+                        (elapsed / RAMREV_BLOCK_MS) * RAMREV_BLOCK_MS;
+                elapsed = now - ramRevCycleStartMs;
+            }
+
+            long delayMs = Math.round(2.0 * elapsed);
+            glView.showRamOffsetMs(-delayMs);
+
+            mainHandler.postDelayed(this, 1000L / 60L);
+        }
+    };
+
+    void startRamRev() {
+        ramRevCycleStartMs = 0L;
+        mainHandler.removeCallbacks(ramRevTick);
+        mainHandler.post(ramRevTick);
+        updateOverlay("RAMRev 1080p60");
+    }
+
     final Runnable hudHeartbeat =
             new Runnable() {
                 @Override
@@ -450,7 +497,12 @@ public class MainActivity extends Activity {
                 getResources().getConfiguration().orientation ==
                         android.content.res.Configuration.ORIENTATION_PORTRAIT
         );
-        glView.setLensMode(GLView.LensMode.DUBBUF_REVERSE);
+        captureFps = 60;
+        captureWidth = 1920;
+        captureHeight = 1080;
+        playbackFps = 60;
+        activeTestPreset = "RAMREV_1080P60";
+        glView.setLensMode(GLView.LensMode.RAMREV);
 
         root.addView(
                 glView,
@@ -1021,8 +1073,9 @@ public class MainActivity extends Activity {
 
     void showModeChoices(View anchor) {
         showChoicePopup(anchor,
-                new String[]{"REVERSE", "SLOW", "FAST", "FREEZE", "STUTTER", "SCRUB", "REWIND"},
+                new String[]{"RAMREV", "REVERSE", "SLOW", "FAST", "FREEZE", "STUTTER", "SCRUB", "REWIND"},
                 new Runnable[]{
+                        () -> setLensMode(GLView.LensMode.RAMREV),
                         () -> setLensMode(GLView.LensMode.DUBBUF_REVERSE),
                         () -> setLensMode(GLView.LensMode.SLOW),
                         () -> setLensMode(GLView.LensMode.FAST),
@@ -1032,7 +1085,8 @@ public class MainActivity extends Activity {
                         () -> setLensMode(GLView.LensMode.REWIND)
                 },
                 new int[]{
-                        MODE_REVERSE, MODE_SLOW, MODE_FAST, MODE_FREEZE, MODE_STUTTER, MODE_SCRUB, MODE_REWIND
+                        MODE_RAMREV, MODE_REVERSE, MODE_SLOW, MODE_FAST,
+                        MODE_FREEZE, MODE_STUTTER, MODE_SCRUB, MODE_REWIND
                 });
     }
 
@@ -1120,6 +1174,7 @@ public class MainActivity extends Activity {
             case STUTTER: return MODE_STUTTER;
             case SCRUB: return MODE_SCRUB;
             case REWIND: return MODE_REWIND;
+            case RAMREV: return MODE_RAMREV;
             default: return MODE_REVERSE;
         }
     }
@@ -1168,7 +1223,10 @@ public class MainActivity extends Activity {
         String time = "";
         String factor = "—";
 
-        if (m == GLView.LensMode.REWIND) {
+        if (m == GLView.LensMode.RAMREV) {
+            time = "1.0 s";
+            factor = "1x";
+        } else if (m == GLView.LensMode.REWIND) {
             time = ramBuffer == null
                     ? "0.0 s"
                     : String.format(Locale.US, "%.1f s", ramBuffer.getHistorySeconds());
@@ -1599,6 +1657,19 @@ public class MainActivity extends Activity {
         }
 
         running = true;
+        if (glView.getLensMode() == GLView.LensMode.RAMREV) {
+            updateOverlay("Starting RAMRev 1080p60");
+            startRamPreviewSession(() -> {
+                glView.setRamBuffer(ramBuffer);
+                glView.showRamLive();
+                startRamRev();
+
+                TraceLog.i("RAMRev active 1080p60 reverse 1x");
+                hideSplashAfterFirstFrame();
+            });
+            return;
+        }
+
         if (glView.getLensMode() == GLView.LensMode.REWIND) {
             updateOverlay("Starting RAM Rewind 1080p60");
             startRamPreviewSession(() -> {
@@ -3384,7 +3455,8 @@ public class MainActivity extends Activity {
 
                 boolean ramSupported = glView == null ||
                         (glView.getLensMode() != GLView.LensMode.SCRUB &&
-                         glView.getLensMode() != GLView.LensMode.REWIND) ||
+                         glView.getLensMode() != GLView.LensMode.REWIND &&
+                         glView.getLensMode() != GLView.LensMode.RAMREV) ||
                         containsSize(map.getOutputSizes(ImageFormat.YUV_420_888), wantedSize);
 
                 if (previewSupported &&
@@ -3677,6 +3749,37 @@ public class MainActivity extends Activity {
             updateControlButtons(); updateOverlay("Reverse; restarting");
             if (splashPanel != null) splashPanel.setVisibility(View.GONE);
             scheduleCameraRecovery("DubBuf mode restart");
+            return;
+        }
+
+        if (mode == GLView.LensMode.RAMREV) {
+            running = false;
+            recordingFollowing = false;
+            pendingRecordingCycleId = -1;
+            loadingCycleId = -1;
+
+            mainHandler.removeCallbacks(ramRevTick);
+            ramRevCycleStartMs = 0L;
+
+            glView.stopFreeze();
+            glView.stopDubBufReverse();
+            glView.stopStutter();
+            glView.stopFast();
+            glView.releaseAllPlayers();
+            glView.setLensMode(mode);
+
+            captureFps = 60;
+            captureWidth = 1920;
+            captureHeight = 1080;
+            playbackFps = 60;
+            activeTestPreset = "RAMREV_1080P60";
+
+            updateControlButtons();
+            updateScrubUi();
+            updateOverlay("RAMRev 1080p60; restarting");
+
+            if (splashPanel != null) splashPanel.setVisibility(View.GONE);
+            scheduleCameraRecovery("RAMRev mode restart");
             return;
         }
 
@@ -4045,6 +4148,7 @@ public class MainActivity extends Activity {
         if (glView.getLensMode() == GLView.LensMode.FAST) return "Fast";
         if (glView.getLensMode() == GLView.LensMode.SCRUB) return "Scrub";
         if (glView.getLensMode() == GLView.LensMode.REWIND) return "Rewind";
+        if (glView.getLensMode() == GLView.LensMode.RAMREV) return "RAMRev";
         return "Reverse";
     }
 
