@@ -40,7 +40,7 @@ public class MainActivity extends Activity {
     static final int SLOW_CAPTURE_FPS = 240;
     static final int REVERSE_CAPTURE_FPS = 120;
     static final String VERSION =
-            "v0.6.30";
+            "v0.6.31";
 
     static final int SLOW_PLAYBACK_FPS = 24;
     static final int SLOW_DECODE_MARGIN_MS = 0;
@@ -55,6 +55,7 @@ public class MainActivity extends Activity {
     static final int MODE_FREEZE  = 0xff20dfe5;
     static final int MODE_STUTTER = 0xffffdf20;
     static final int MODE_SCRUB   = TIMETOY_VIOLET;
+    static final int MODE_REWIND  = TIMETOY_ORANGE;
     static final int STANDARD_REVERSE_RECORD_MS = 1600;
     static final int STANDARD_REVERSE_PLAYBACK_MS = 1000;
     static final int TEST_REVERSE_MS = 4000;
@@ -183,6 +184,12 @@ public class MainActivity extends Activity {
     boolean ramScrubbing = false;
     long ramSelectedOffsetMs = 0L;
 
+    boolean rewindHolding = false;
+    boolean rewindCatchup = false;
+    boolean rewindAtLimit = false;
+    double rewindDelayMs = 0.0;
+    long rewindLastTickMs = 0L;
+
     MediaSurfaceRecorder recorder;
 
     final CameraCaptureSession.CaptureCallback frameAuditCaptureCallback =
@@ -272,6 +279,99 @@ public class MainActivity extends Activity {
             flashLabel.setVisibility(View.GONE);
         }
     };
+
+    final Runnable rewindTick = new Runnable() {
+        @Override public void run() {
+            if (glView == null ||
+                    glView.getLensMode() != GLView.LensMode.REWIND ||
+                    (!rewindHolding && !rewindCatchup)) {
+                rewindLastTickMs = 0L;
+                return;
+            }
+
+            long now = SystemClock.elapsedRealtime();
+            if (rewindLastTickMs == 0L) rewindLastTickMs = now;
+            long dt = Math.max(0L, Math.min(50L, now - rewindLastTickMs));
+            rewindLastTickMs = now;
+
+            double maxDelayMs = ramBuffer == null
+                    ? 0.0
+                    : ramBuffer.getHistorySeconds() * 1000.0;
+
+            if (rewindHolding) {
+                if (!rewindAtLimit) {
+                    rewindDelayMs += 2.0 * dt;
+
+                    if (rewindDelayMs >= maxDelayMs) {
+                        rewindDelayMs = maxDelayMs;
+                        rewindAtLimit = true;
+                    }
+                }
+            } else if (rewindCatchup) {
+                rewindDelayMs -= 2.0 * dt;
+
+                if (rewindDelayMs <= 0.0) {
+                    rewindDelayMs = 0.0;
+                    rewindCatchup = false;
+                    rewindAtLimit = false;
+                    glView.showRamLive();
+                    updateOverlay("Rewind LIVE");
+                    return;
+                }
+            }
+
+            if (rewindDelayMs > 0.0) {
+                glView.showRamOffsetMs(-Math.round(rewindDelayMs));
+            } else {
+                glView.showRamLive();
+            }
+
+            mainHandler.postDelayed(this, 1000L / 60L);
+        }
+    };
+
+    void startRewindHold() {
+        if (glView == null ||
+                glView.getLensMode() != GLView.LensMode.REWIND ||
+                ramBuffer == null ||
+                ramBuffer.getCount() < 2) {
+            return;
+        }
+
+        rewindHolding = true;
+        rewindCatchup = false;
+        rewindAtLimit = false;
+        rewindLastTickMs = SystemClock.elapsedRealtime();
+
+        mainHandler.removeCallbacks(rewindTick);
+        mainHandler.post(rewindTick);
+
+        updateOverlay("Rewind 1x");
+    }
+
+    void releaseRewindHold() {
+        if (glView == null ||
+                glView.getLensMode() != GLView.LensMode.REWIND) {
+            return;
+        }
+
+        rewindHolding = false;
+
+        if (rewindDelayMs <= 0.0) {
+            rewindCatchup = false;
+            glView.showRamLive();
+            return;
+        }
+
+        rewindCatchup = true;
+        rewindAtLimit = false;
+        rewindLastTickMs = SystemClock.elapsedRealtime();
+
+        mainHandler.removeCallbacks(rewindTick);
+        mainHandler.post(rewindTick);
+
+        updateOverlay("Rewind forward 3x");
+    }
 
     final Runnable hudHeartbeat =
             new Runnable() {
@@ -371,6 +471,25 @@ public class MainActivity extends Activity {
         buildSplash(root);
 
         setContentView(root);
+
+        glView.setOnTouchListener((v, event) -> {
+            if (glView.getLensMode() != GLView.LensMode.REWIND) {
+                return false;
+            }
+
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    startRewindHold();
+                    return true;
+
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    releaseRewindHold();
+                    return true;
+            }
+
+            return true;
+        });
 
         glView.listener = st -> {
             TraceLog.i(
@@ -902,17 +1021,18 @@ public class MainActivity extends Activity {
 
     void showModeChoices(View anchor) {
         showChoicePopup(anchor,
-                new String[]{"REVERSE", "SLOW", "FAST", "FREEZE", "STUTTER", "SCRUB"},
+                new String[]{"REVERSE", "SLOW", "FAST", "FREEZE", "STUTTER", "SCRUB", "REWIND"},
                 new Runnable[]{
                         () -> setLensMode(GLView.LensMode.DUBBUF_REVERSE),
                         () -> setLensMode(GLView.LensMode.SLOW),
                         () -> setLensMode(GLView.LensMode.FAST),
                         () -> setLensMode(GLView.LensMode.FREEZE),
                         () -> setLensMode(GLView.LensMode.STUTTER),
-                        () -> setLensMode(GLView.LensMode.SCRUB)
+                        () -> setLensMode(GLView.LensMode.SCRUB),
+                        () -> setLensMode(GLView.LensMode.REWIND)
                 },
                 new int[]{
-                        MODE_REVERSE, MODE_SLOW, MODE_FAST, MODE_FREEZE, MODE_STUTTER, MODE_SCRUB
+                        MODE_REVERSE, MODE_SLOW, MODE_FAST, MODE_FREEZE, MODE_STUTTER, MODE_SCRUB, MODE_REWIND
                 });
     }
 
@@ -999,6 +1119,7 @@ public class MainActivity extends Activity {
             case FREEZE: return MODE_FREEZE;
             case STUTTER: return MODE_STUTTER;
             case SCRUB: return MODE_SCRUB;
+            case REWIND: return MODE_REWIND;
             default: return MODE_REVERSE;
         }
     }
@@ -1047,7 +1168,12 @@ public class MainActivity extends Activity {
         String time = "";
         String factor = "—";
 
-        if (m == GLView.LensMode.SCRUB) {
+        if (m == GLView.LensMode.REWIND) {
+            time = ramBuffer == null
+                    ? "0.0 s"
+                    : String.format(Locale.US, "%.1f s", ramBuffer.getHistorySeconds());
+            factor = "1x / 3x";
+        } else if (m == GLView.LensMode.SCRUB) {
             time = ramBuffer == null
                     ? "0.0 s"
                     : String.format(Locale.US, "%.1f s", ramBuffer.getHistorySeconds());
@@ -1473,6 +1599,23 @@ public class MainActivity extends Activity {
         }
 
         running = true;
+        if (glView.getLensMode() == GLView.LensMode.REWIND) {
+            updateOverlay("Starting RAM Rewind 1080p60");
+            startRamPreviewSession(() -> {
+                glView.setRamBuffer(ramBuffer);
+                glView.showRamLive();
+
+                rewindHolding = false;
+                rewindCatchup = false;
+                rewindAtLimit = false;
+                rewindDelayMs = 0.0;
+
+                TraceLog.i("RAM Rewind active 1x back / 3x forward");
+                hideSplashAfterFirstFrame();
+            });
+            return;
+        }
+
         if (glView.getLensMode() == GLView.LensMode.SCRUB) {
             updateOverlay("Starting RAM Scrub 1080p60");
             startRamPreviewSession(() -> {
@@ -3240,7 +3383,8 @@ public class MainActivity extends Activity {
                         );
 
                 boolean ramSupported = glView == null ||
-                        glView.getLensMode() != GLView.LensMode.SCRUB ||
+                        (glView.getLensMode() != GLView.LensMode.SCRUB &&
+                         glView.getLensMode() != GLView.LensMode.REWIND) ||
                         containsSize(map.getOutputSizes(ImageFormat.YUV_420_888), wantedSize);
 
                 if (previewSupported &&
@@ -3533,6 +3677,41 @@ public class MainActivity extends Activity {
             updateControlButtons(); updateOverlay("Reverse; restarting");
             if (splashPanel != null) splashPanel.setVisibility(View.GONE);
             scheduleCameraRecovery("DubBuf mode restart");
+            return;
+        }
+
+        if (mode == GLView.LensMode.REWIND) {
+            running = false;
+            recordingFollowing = false;
+            pendingRecordingCycleId = -1;
+            loadingCycleId = -1;
+
+            rewindHolding = false;
+            rewindCatchup = false;
+            rewindAtLimit = false;
+            rewindDelayMs = 0.0;
+            rewindLastTickMs = 0L;
+            mainHandler.removeCallbacks(rewindTick);
+
+            glView.stopFreeze();
+            glView.stopDubBufReverse();
+            glView.stopStutter();
+            glView.stopFast();
+            glView.releaseAllPlayers();
+            glView.setLensMode(mode);
+
+            captureFps = 60;
+            captureWidth = 1920;
+            captureHeight = 1080;
+            playbackFps = 60;
+            activeTestPreset = "RAM_REWIND_1080P60_1X_3X";
+
+            updateControlButtons();
+            updateScrubUi();
+            updateOverlay("Rewind RAM 1080p60; restarting");
+
+            if (splashPanel != null) splashPanel.setVisibility(View.GONE);
+            scheduleCameraRecovery("Rewind RAM mode restart");
             return;
         }
 
@@ -3865,6 +4044,7 @@ public class MainActivity extends Activity {
         if (glView.getLensMode() == GLView.LensMode.STUTTER) return "Stutter";
         if (glView.getLensMode() == GLView.LensMode.FAST) return "Fast";
         if (glView.getLensMode() == GLView.LensMode.SCRUB) return "Scrub";
+        if (glView.getLensMode() == GLView.LensMode.REWIND) return "Rewind";
         return "Reverse";
     }
 
