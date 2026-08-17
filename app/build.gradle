@@ -11,7 +11,7 @@ android {
         versionCode 1
         versionName "1.0"
         testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
-        externalNativeBuild { cmake { cppFlags "-std=c++14 -O3" } }
+        externalNativeBuild { ndkBuild { cppFlags "-std=c++14 -O3" } }
         ndk { abiFilters "arm64-v8a" }
     }
     buildTypes {
@@ -27,7 +27,7 @@ android {
     }
 
     kotlinOptions { jvmTarget = '1.8' }
-    externalNativeBuild { cmake { path "src/main/cpp/CMakeLists.txt" } }
+    externalNativeBuild { ndkBuild { path "src/main/cpp/Android.mk" } }
 }
 
 dependencies {
