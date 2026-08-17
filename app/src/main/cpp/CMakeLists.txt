@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.4.1)
+project(timetoy_c)
+add_library(timetoy_c SHARED cengine.cpp)
+set_target_properties(timetoy_c PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED YES)
+target_compile_options(timetoy_c PRIVATE -O3)
+find_library(log-lib log)
+target_link_libraries(timetoy_c ${log-lib})

@@ -1,7 +1,7 @@
 // ============================================================
 // Timetoy
 // File: GLView.java
-// Version: v0.6.32
+// Version: v0.6.33
 // Build: 30 Hz Reverse Tape + Slice Stutter
 // Date: 2026-08-09
 // ============================================================
@@ -25,7 +25,7 @@ public class GLView extends GLSurfaceView {
     private final LensPlayer[] players = new LensPlayer[2];
     private final LensMode[] slotModes = new LensMode[2];
 
-    public enum LensMode { REVERSE, DUBBUF_REVERSE, SLOW, FREEZE, STUTTER, FAST, SCRUB, REWIND, RAMREV }
+    public enum LensMode { REVERSE, DUBBUF_REVERSE, SLOW, FREEZE, STUTTER, FAST, SCRUB, REWIND, RAMREV, CREV }
 
     private volatile LensMode lensMode = LensMode.DUBBUF_REVERSE;
     private final boolean[] waitingForFirstTexture = new boolean[2];
