@@ -182,6 +182,7 @@ public class MainActivity extends Activity {
     Surface previewSurface;
 
     RamFrameBuffer ramBuffer;
+    Tape3 tape3;
     ImageReader ramReader;
     boolean ramScrubbing = false;
     long ramSelectedOffsetMs = 0L;
@@ -1075,8 +1076,9 @@ public class MainActivity extends Activity {
 
     void showModeChoices(View anchor) {
         showChoicePopup(anchor,
-                new String[]{"CREV", "RAMREV", "REVERSE", "SLOW", "FAST", "FREEZE", "STUTTER", "SCRUB", "REWIND"},
+                new String[]{"TAPE3", "CREV", "RAMREV", "REVERSE", "SLOW", "FAST", "FREEZE", "STUTTER", "SCRUB", "REWIND"},
                 new Runnable[]{
+                        () -> setLensMode(GLView.LensMode.TAPE3),
                         () -> setLensMode(GLView.LensMode.CREV),
                         () -> setLensMode(GLView.LensMode.RAMREV),
                         () -> setLensMode(GLView.LensMode.DUBBUF_REVERSE),
@@ -1088,7 +1090,7 @@ public class MainActivity extends Activity {
                         () -> setLensMode(GLView.LensMode.REWIND)
                 },
                 new int[]{
-                        MODE_CREV, MODE_RAMREV, MODE_REVERSE, MODE_SLOW, MODE_FAST,
+                        MODE_CREV, MODE_CREV, MODE_RAMREV, MODE_REVERSE, MODE_SLOW, MODE_FAST,
                         MODE_FREEZE, MODE_STUTTER, MODE_SCRUB, MODE_REWIND
                 });
     }
@@ -1166,6 +1168,7 @@ public class MainActivity extends Activity {
         showChoicePopup(anchor,
                 new String[]{"B/W", "Pop", "Mirror"},
                 new Runnable[]{stub, stub, stub});
+                        () -> setLensMode(GLView.LensMode.TAPE3),
     }
 
     int modeColor() {

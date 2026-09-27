@@ -25,7 +25,7 @@ public class GLView extends GLSurfaceView {
     private final LensPlayer[] players = new LensPlayer[2];
     private final LensMode[] slotModes = new LensMode[2];
 
-    public enum LensMode { REVERSE, DUBBUF_REVERSE, SLOW, FREEZE, STUTTER, FAST, SCRUB, REWIND, RAMREV, CREV }
+    public enum LensMode { REVERSE, DUBBUF_REVERSE, SLOW, FREEZE, STUTTER, FAST, SCRUB, REWIND, RAMREV, CREV, TAPE3 }
 
     private volatile LensMode lensMode = LensMode.DUBBUF_REVERSE;
     private final boolean[] waitingForFirstTexture = new boolean[2];
