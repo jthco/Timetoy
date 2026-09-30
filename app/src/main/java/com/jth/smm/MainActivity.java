@@ -16,6 +16,7 @@ import android.content.pm.PackageManager;
 import android.graphics.SurfaceTexture;
 import android.graphics.BitmapFactory;
 import android.hardware.camera2.*;
+import android.hardware.camera2.CameraConstrainedHighSpeedCaptureSession;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.MediaCodec;
 import android.media.MediaExtractor;
@@ -198,6 +199,13 @@ public class MainActivity extends Activity {
 
     MediaSurfaceRecorder recorder;
 
+    volatile double tape3SensorFrameMs = 0.0;
+    volatile double tape3ExposureMs = 0.0;
+    volatile int tape3Iso = 0;
+    volatile int tape3AeState = -1;
+    volatile double tape3CallbackFps = 0.0;
+    volatile String tape3RequestedAe = "--";
+
     long tape3AuditFirstNs = 0L;
     long tape3AuditLastLogNs = 0L;
     long tape3AuditFrames = 0L;
@@ -216,6 +224,26 @@ public class MainActivity extends Activity {
 
                     if (glView != null && glView.getLensMode() == GLView.LensMode.TAPE3) {
                         tape3AuditFrames++;
+                        Long tape3FrameDuration =
+                                result.get(CaptureResult.SENSOR_FRAME_DURATION);
+                        Long tape3Exposure =
+                                result.get(CaptureResult.SENSOR_EXPOSURE_TIME);
+                        Integer tape3Sensitivity =
+                                result.get(CaptureResult.SENSOR_SENSITIVITY);
+                        Integer tape3Ae =
+                                result.get(CaptureResult.CONTROL_AE_STATE);
+                        Range<Integer> tape3AeRequest =
+                                request.get(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE);
+
+                        tape3SensorFrameMs = tape3FrameDuration == null
+                                ? 0.0 : tape3FrameDuration / 1000000.0;
+                        tape3ExposureMs = tape3Exposure == null
+                                ? 0.0 : tape3Exposure / 1000000.0;
+                        tape3Iso = tape3Sensitivity == null ? 0 : tape3Sensitivity;
+                        tape3AeState = tape3Ae == null ? -1 : tape3Ae;
+                        tape3RequestedAe = tape3AeRequest == null
+                                ? "--" : tape3AeRequest.toString();
+
                         long nowNs = System.nanoTime();
                         if (tape3AuditFirstNs == 0L) {
                             tape3AuditFirstNs = nowNs;
@@ -224,6 +252,9 @@ public class MainActivity extends Activity {
                         } else if (nowNs - tape3AuditLastLogNs >= 5000000000L) {
                             long deltaFrames = tape3AuditFrames - tape3AuditLastFrames;
                             double seconds = (nowNs - tape3AuditLastLogNs) / 1000000000.0;
+                            tape3CallbackFps = seconds > 0.0
+                                    ? deltaFrames / seconds : 0.0;
+
                             Long frameDuration = result.get(CaptureResult.SENSOR_FRAME_DURATION);
                             Range<Integer> aeRange = request.get(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE);
                             TraceLog.i("TAPE3 CAMERA frames=" + tape3AuditFrames +
@@ -2394,9 +2425,18 @@ public class MainActivity extends Activity {
         }
 
         try {
-            final Tape3 newTape3 = new Tape3(1920, 1080, 60, 40000000);
+            // First prove Samsungs constrained high-speed path at 1080p120.
+            // Once proven, Tape3 can decide how best to produce its 60 fps tape.
+            final int tape3CameraFps = 120;
+            final Tape3 newTape3 =
+                    new Tape3(1920, 1080, tape3CameraFps, 40000000);
             newTape3.prepare();
             tape3 = newTape3;
+
+            tape3AuditFirstNs = 0L;
+            tape3AuditLastLogNs = 0L;
+            tape3AuditFrames = 0L;
+            tape3AuditLastFrames = 0L;
 
             if (session != null) {
                 try { session.close(); } catch (Exception ignored) {}
@@ -2407,7 +2447,9 @@ public class MainActivity extends Activity {
             surfaces.add(previewSurface);
             surfaces.add(newTape3.getInputSurface());
 
-            cameraDevice.createCaptureSession(
+            TraceLog.i("TAPE3 HS requesting constrained 1920x1080@120 preview+AVC");
+
+            cameraDevice.createConstrainedHighSpeedCaptureSession(
                     surfaces,
                     new CameraCaptureSession.StateCallback() {
                         @Override public void onConfigured(CameraCaptureSession s) {
@@ -2419,33 +2461,46 @@ public class MainActivity extends Activity {
                                     return;
                                 }
 
+                                CameraConstrainedHighSpeedCaptureSession hs =
+                                        (CameraConstrainedHighSpeedCaptureSession) s;
                                 session = s;
                                 recordingSessionConfigured = false;
 
-                                CaptureRequest.Builder b = cameraDevice.createCaptureRequest(
-                                        CameraDevice.TEMPLATE_RECORD);
+                                CaptureRequest.Builder b =
+                                        cameraDevice.createCaptureRequest(
+                                                CameraDevice.TEMPLATE_RECORD);
                                 b.addTarget(previewSurface);
                                 b.addTarget(newTape3.getInputSurface());
                                 b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
-                                        new Range<Integer>(60, 60));
-                                b.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
-                                b.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
+                                        new Range<Integer>(30, 120));
+                                b.set(CaptureRequest.CONTROL_MODE,
+                                        CaptureRequest.CONTROL_MODE_AUTO);
+                                b.set(CaptureRequest.CONTROL_AE_MODE,
+                                        CaptureRequest.CONTROL_AE_MODE_ON);
                                 applyCameraZoom(b, cameraZoom);
 
-                                newTape3.start();
-                                s.setRepeatingRequest(
-                                        b.build(), frameAuditCaptureCallback, cameraHandler);
+                                List<CaptureRequest> burst =
+                                        hs.createHighSpeedRequestList(b.build());
 
-                                TraceLog.i("TAPE3 session active 1920x1080@60 targets=preview+AVC");
+                                newTape3.start();
+                                hs.setRepeatingBurst(
+                                        burst,
+                                        frameAuditCaptureCallback,
+                                        cameraHandler);
+
+                                TraceLog.i(
+                                        "TAPE3 HS active 1920x1080@120 burstRequests=" +
+                                        burst.size() + " targets=preview+AVC");
                                 if (onReady != null) mainHandler.post(onReady);
                             } catch (Exception e) {
-                                TraceLog.e("TAPE3 session configure error", e);
+                                TraceLog.e("TAPE3 HS session configure error", e);
                             }
                         }
 
                         @Override public void onConfigureFailed(CameraCaptureSession s) {
-                            TraceLog.i("TAPE3 camera session failed");
-                            updateOverlay("Tape3 1080p60 stream combination failed");
+                            TraceLog.i("TAPE3 HS camera session failed");
+                            updateOverlay(
+                                    "Tape3 1080p120 high-speed stream combination failed");
                             if (tape3 == newTape3) tape3 = null;
                             newTape3.stopAndRelease();
                         }
@@ -2453,8 +2508,8 @@ public class MainActivity extends Activity {
                     cameraHandler
             );
         } catch (Exception e) {
-            TraceLog.e("startTape3Session failed", e);
-            updateOverlay("Tape3 start failed: " + e);
+            TraceLog.e("startTape3Session HS failed", e);
+            updateOverlay("Tape3 high-speed start failed: " + e);
             if (tape3 != null) {
                 tape3.stopAndRelease();
                 tape3 = null;
@@ -4594,6 +4649,73 @@ public class MainActivity extends Activity {
     void refreshOverlay() {
         runOnUiThread(() -> {
             if (overlay == null) return;
+
+            if (glView != null &&
+                    glView.getLensMode() == GLView.LensMode.TAPE3) {
+                Tape3 t = tape3;
+                double sensorFps = tape3SensorFrameMs > 0.0
+                        ? 1000.0 / tape3SensorFrameMs : 0.0;
+
+                String aeText;
+                switch (tape3AeState) {
+                    case CaptureResult.CONTROL_AE_STATE_INACTIVE:
+                        aeText = "INACTIVE"; break;
+                    case CaptureResult.CONTROL_AE_STATE_SEARCHING:
+                        aeText = "SEARCHING"; break;
+                    case CaptureResult.CONTROL_AE_STATE_CONVERGED:
+                        aeText = "CONVERGED"; break;
+                    case CaptureResult.CONTROL_AE_STATE_LOCKED:
+                        aeText = "LOCKED"; break;
+                    case CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED:
+                        aeText = "FLASH"; break;
+                    case CaptureResult.CONTROL_AE_STATE_PRECAPTURE:
+                        aeText = "PRECAPTURE"; break;
+                    default:
+                        aeText = "--";
+                }
+
+                if (t == null) {
+                    overlay.setText("TAPE3\nStarting...");
+                } else {
+                    overlay.setText(String.format(Locale.US,
+                            "TAPE3  1920x1080\n" +
+                            "HS AE %s\n\n" +
+                            "SENSOR\n" +
+                            "Frame     %.2f ms   %.1f fps\n" +
+                            "Exposure  %.2f ms\n" +
+                            "ISO       %d\n" +
+                            "AE        %s\n\n" +
+                            "CAMERA\n" +
+                            "Callbacks %.1f /s\n\n" +
+                            "CODEC\n" +
+                            "Frames    %d\n" +
+                            "Rate      %.1f fps\n" +
+                            "All-I     %.1f%%\n" +
+                            "Average   %.1f KB\n" +
+                            "Peak      %.1f KB\n\n" +
+                            "TAPE\n" +
+                            "RAM       %.1f / 128 MiB\n" +
+                            "Write     %.2f MB/s\n" +
+                            "History   %.1f s",
+                            tape3RequestedAe,
+                            tape3SensorFrameMs,
+                            sensorFps,
+                            tape3ExposureMs,
+                            tape3Iso,
+                            aeText,
+                            tape3CallbackFps,
+                            t.getTotalFrames(),
+                            t.getEncodedFps(),
+                            t.getKeyPercent(),
+                            t.getAverageFrameBytes() / 1024.0,
+                            t.getPeakFrameBytes() / 1024.0,
+                            t.getMegabytes(),
+                            t.getMegabytesPerSecond(),
+                            t.getEstimatedHistorySeconds()));
+                }
+                return;
+            }
+
 
             GLView.LensMode lensMode = glView == null
                     ? GLView.LensMode.DUBBUF_REVERSE

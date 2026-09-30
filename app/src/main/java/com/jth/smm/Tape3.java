@@ -409,6 +409,43 @@ public final class Tape3 {
     }
 
 
+    public long getTotalFrames() { return totalFrames; }
+
+    public long getKeyFrames() { return keyFrames; }
+
+    public double getEncodedFps() {
+        long nowNs = System.nanoTime();
+        double seconds = startNs == 0 ? 0.0 :
+                (nowNs - startNs) / 1000000000.0;
+        return seconds > 0.0 ? totalFrames / seconds : 0.0;
+    }
+
+    public double getMegabytes() {
+        return totalBytes / (1024.0 * 1024.0);
+    }
+
+    public double getMegabytesPerSecond() {
+        long nowNs = System.nanoTime();
+        double seconds = startNs == 0 ? 0.0 :
+                (nowNs - startNs) / 1000000000.0;
+        return seconds > 0.0 ? getMegabytes() / seconds : 0.0;
+    }
+
+    public double getAverageFrameBytes() {
+        return totalFrames > 0 ? (double) totalBytes / totalFrames : 0.0;
+    }
+
+    public int getPeakFrameBytes() { return peakFrameBytes; }
+
+    public double getKeyPercent() {
+        return totalFrames > 0 ? 100.0 * keyFrames / totalFrames : 0.0;
+    }
+
+    public double getEstimatedHistorySeconds() {
+        double rate = getMegabytesPerSecond();
+        return rate > 0.0 ? ARENA_MIB / rate : 0.0;
+    }
+
     public void stopAndRelease() {
 
         running = false;
