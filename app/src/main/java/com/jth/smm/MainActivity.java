@@ -504,8 +504,8 @@ public class MainActivity extends Activity {
         captureWidth = 1920;
         captureHeight = 1080;
         playbackFps = 60;
-        activeTestPreset = "CREV_1080P60";
-        glView.setLensMode(GLView.LensMode.CREV);
+        activeTestPreset = "TAPE3_1080P60";
+        glView.setLensMode(GLView.LensMode.TAPE3);
 
         root.addView(
                 glView,
@@ -1668,6 +1668,15 @@ public class MainActivity extends Activity {
         }
 
         running = true;
+
+        if (glView.getLensMode() == GLView.LensMode.TAPE3) {
+            updateOverlay("Starting Tape3 1080p60 All-I");
+            startTape3Session(() -> {
+                TraceLog.i("TAPE3 active 1080p60 All-I");
+                hideSplashAfterFirstFrame();
+            });
+            return;
+        }
         if (glView.getLensMode() == GLView.LensMode.RAMREV ||
                 glView.getLensMode() == GLView.LensMode.CREV) {
             updateOverlay(glView.getLensMode() == GLView.LensMode.CREV
@@ -2352,6 +2361,89 @@ public class MainActivity extends Activity {
 
 
 
+    void startTape3Session(Runnable onReady) {
+        if (cameraDevice == null || previewSurface == null) {
+            if (onReady != null) onReady.run();
+            return;
+        }
+
+        try {
+            final Tape3 newTape3 = new Tape3(1920, 1080, 60, 40000000);
+            newTape3.prepare();
+            tape3 = newTape3;
+
+            if (session != null) {
+                try { session.close(); } catch (Exception ignored) {}
+                session = null;
+            }
+
+            ArrayList<Surface> surfaces = new ArrayList<>();
+            surfaces.add(previewSurface);
+            surfaces.add(newTape3.getInputSurface());
+
+            cameraDevice.createCaptureSession(
+                    surfaces,
+                    new CameraCaptureSession.StateCallback() {
+                        @Override public void onConfigured(CameraCaptureSession s) {
+                            try {
+                                if (tape3 != newTape3 ||
+                                        glView.getLensMode() != GLView.LensMode.TAPE3) {
+                                    try { s.close(); } catch (Exception ignored) {}
+                                    newTape3.stopAndRelease();
+                                    return;
+                                }
+
+                                session = s;
+                                recordingSessionConfigured = false;
+
+                                CaptureRequest.Builder b = cameraDevice.createCaptureRequest(
+                                        CameraDevice.TEMPLATE_RECORD);
+                                b.addTarget(previewSurface);
+                                b.addTarget(newTape3.getInputSurface());
+                                b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                                        new Range<Integer>(60, 60));
+                                b.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
+                                b.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
+                                applyCameraZoom(b, cameraZoom);
+
+                                newTape3.start();
+                                s.setRepeatingRequest(
+                                        b.build(), frameAuditCaptureCallback, cameraHandler);
+
+                                TraceLog.i("TAPE3 session active 1920x1080@60 targets=preview+AVC");
+                                if (onReady != null) mainHandler.post(onReady);
+                            } catch (Exception e) {
+                                TraceLog.e("TAPE3 session configure error", e);
+                            }
+                        }
+
+                        @Override public void onConfigureFailed(CameraCaptureSession s) {
+                            TraceLog.i("TAPE3 camera session failed");
+                            updateOverlay("Tape3 1080p60 stream combination failed");
+                            if (tape3 == newTape3) tape3 = null;
+                            newTape3.stopAndRelease();
+                        }
+                    },
+                    cameraHandler
+            );
+        } catch (Exception e) {
+            TraceLog.e("startTape3Session failed", e);
+            updateOverlay("Tape3 start failed: " + e);
+            if (tape3 != null) {
+                tape3.stopAndRelease();
+                tape3 = null;
+            }
+        }
+    }
+
+    void closeTape3() {
+        Tape3 oldTape3 = tape3;
+        tape3 = null;
+        if (oldTape3 != null) {
+            try { oldTape3.stopAndRelease(); } catch (Exception ignored) {}
+        }
+    }
+
     void startRamPreviewSession(Runnable onReady) {
         TraceLog.i("DBG RAM 01 enter startRamPreviewSession");
         if (cameraDevice == null || previewSurface == null) {
@@ -2616,6 +2708,8 @@ public class MainActivity extends Activity {
     }
 
     void ensurePersistentEncoderSurface() {
+        closeTape3();
+
         if (encoderSurface != null) {
             return;
         }
@@ -2967,6 +3061,8 @@ public class MainActivity extends Activity {
             }
             session = null;
         }
+
+        closeTape3();
 
         if (encoderSurface != null) {
             try {
@@ -4194,6 +4290,7 @@ public class MainActivity extends Activity {
         if (glView.getLensMode() == GLView.LensMode.REWIND) return "Rewind";
         if (glView.getLensMode() == GLView.LensMode.RAMREV) return "RAMRev";
         if (glView.getLensMode() == GLView.LensMode.CREV) return "CRev";
+        if (glView.getLensMode() == GLView.LensMode.TAPE3) return "Live";
         return "Reverse";
     }
 
