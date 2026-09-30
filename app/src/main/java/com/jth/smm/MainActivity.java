@@ -198,6 +198,11 @@ public class MainActivity extends Activity {
 
     MediaSurfaceRecorder recorder;
 
+    long tape3AuditFirstNs = 0L;
+    long tape3AuditLastLogNs = 0L;
+    long tape3AuditFrames = 0L;
+    long tape3AuditLastFrames = 0L;
+
     final CameraCaptureSession.CaptureCallback frameAuditCaptureCallback =
             new CameraCaptureSession.CaptureCallback() {
                 @Override
@@ -208,6 +213,27 @@ public class MainActivity extends Activity {
                 ) {
                     Long timestamp = result.get(CaptureResult.SENSOR_TIMESTAMP);
                     FrameAudit.cameraCapture(timestamp == null ? -1L : timestamp);
+
+                    if (glView != null && glView.getLensMode() == GLView.LensMode.TAPE3) {
+                        tape3AuditFrames++;
+                        long nowNs = System.nanoTime();
+                        if (tape3AuditFirstNs == 0L) {
+                            tape3AuditFirstNs = nowNs;
+                            tape3AuditLastLogNs = nowNs;
+                            tape3AuditLastFrames = tape3AuditFrames;
+                        } else if (nowNs - tape3AuditLastLogNs >= 5000000000L) {
+                            long deltaFrames = tape3AuditFrames - tape3AuditLastFrames;
+                            double seconds = (nowNs - tape3AuditLastLogNs) / 1000000000.0;
+                            Long frameDuration = result.get(CaptureResult.SENSOR_FRAME_DURATION);
+                            Range<Integer> aeRange = request.get(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE);
+                            TraceLog.i("TAPE3 CAMERA frames=" + tape3AuditFrames +
+                                    " fps=" + (deltaFrames / seconds) +
+                                    " frameDurationMs=" + (frameDuration == null ? -1.0 : frameDuration / 1000000.0) +
+                                    " requestedAE=" + aeRange);
+                            tape3AuditLastLogNs = nowNs;
+                            tape3AuditLastFrames = tape3AuditFrames;
+                        }
+                    }
                 }
             };
 
