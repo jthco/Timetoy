@@ -15,6 +15,11 @@ import android.content.Context;
 import android.content.pm.PackageManager;
 import android.graphics.SurfaceTexture;
 import android.graphics.BitmapFactory;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
+
 import android.hardware.camera2.*;
 import android.hardware.camera2.CameraConstrainedHighSpeedCaptureSession;
 import android.hardware.camera2.params.StreamConfigurationMap;
@@ -198,6 +203,67 @@ public class MainActivity extends Activity {
     long ramRevCycleStartMs = 0L;
 
     MediaSurfaceRecorder recorder;
+
+    SensorManager imuSensorManager;
+    Sensor imuAccelerometer;
+    Sensor imuGyroscope;
+
+    volatile float imuAccelX = 0.0f;
+    volatile float imuAccelY = 0.0f;
+    volatile float imuAccelZ = 0.0f;
+    volatile float imuGyroX = 0.0f;
+    volatile float imuGyroY = 0.0f;
+    volatile float imuGyroZ = 0.0f;
+
+    final SensorEventListener imuListener = new SensorEventListener() {
+        @Override
+        public void onSensorChanged(SensorEvent event) {
+            if (event.sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
+                imuAccelX = event.values[0];
+                imuAccelY = event.values[1];
+                imuAccelZ = event.values[2];
+            } else if (event.sensor.getType() == Sensor.TYPE_GYROSCOPE) {
+                imuGyroX = event.values[0];
+                imuGyroY = event.values[1];
+                imuGyroZ = event.values[2];
+            }
+        }
+
+        @Override
+        public void onAccuracyChanged(Sensor sensor, int accuracy) {
+        }
+    };
+
+    void startImu() {
+        if (imuSensorManager == null) {
+            imuSensorManager =
+                    (SensorManager) getSystemService(Context.SENSOR_SERVICE);
+            if (imuSensorManager != null) {
+                imuAccelerometer = imuSensorManager.getDefaultSensor(
+                        Sensor.TYPE_ACCELEROMETER);
+                imuGyroscope = imuSensorManager.getDefaultSensor(
+                        Sensor.TYPE_GYROSCOPE);
+            }
+        }
+
+        if (imuSensorManager == null) return;
+        imuSensorManager.unregisterListener(imuListener);
+
+        if (imuAccelerometer != null)
+            imuSensorManager.registerListener(
+                    imuListener, imuAccelerometer,
+                    SensorManager.SENSOR_DELAY_GAME);
+
+        if (imuGyroscope != null)
+            imuSensorManager.registerListener(
+                    imuListener, imuGyroscope,
+                    SensorManager.SENSOR_DELAY_GAME);
+    }
+
+    void stopImu() {
+        if (imuSensorManager != null)
+            imuSensorManager.unregisterListener(imuListener);
+    }
 
     volatile double tape3SensorFrameMs = 0.0;
     volatile double tape3ExposureMs = 0.0;
@@ -583,6 +649,9 @@ public class MainActivity extends Activity {
         buildSplash(root);
 
         setContentView(root);
+
+        startImu();
+
 
         glView.setOnTouchListener((v, event) -> {
             if (glView.getLensMode() != GLView.LensMode.REWIND) {
@@ -4693,6 +4762,9 @@ public class MainActivity extends Activity {
                             "All-I     %.1f%%\n" +
                             "Average   %.1f KB\n" +
                             "Peak      %.1f KB\n\n" +
+                            "IMU\n" +
+                            "Accel     %+.2f  %+.2f  %+.2f m/s²\n" +
+                            "Gyro      %+.3f  %+.3f  %+.3f rad/s\n\n" +
                             "TAPE\n" +
                             "RAM       %.1f / 128 MiB\n" +
                             "Write     %.2f MB/s\n" +
@@ -4709,6 +4781,12 @@ public class MainActivity extends Activity {
                             t.getKeyPercent(),
                             t.getAverageFrameBytes() / 1024.0,
                             t.getPeakFrameBytes() / 1024.0,
+                            imuAccelX,
+                            imuAccelY,
+                            imuAccelZ,
+                            imuGyroX,
+                            imuGyroY,
+                            imuGyroZ,
                             t.getMegabytes(),
                             t.getMegabytesPerSecond(),
                             t.getEstimatedHistorySeconds()));
@@ -4829,6 +4907,8 @@ public class MainActivity extends Activity {
     protected void onPause() {
         super.onPause();
         appPaused = true;
+        stopImu();
+
         running = false;
         mainHandler.removeCallbacks(reopenCameraRunnable);
         cameraOpenGeneration++;
@@ -4849,6 +4929,8 @@ public class MainActivity extends Activity {
         enterFullscreen();
         if (!appPaused) return;
         appPaused = false;
+        startImu();
+
         TraceLog.i("MainActivity onResume; reopening camera once");
         if (cameraTexture != null &&
                 checkSelfPermission(Manifest.permission.CAMERA) ==
