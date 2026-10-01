@@ -1,0 +1,177 @@
+diff --git a/app/src/main/java/com/jth/smm/MainActivity.java b/app/src/main/java/com/jth/smm/MainActivity.java
+--- a/app/src/main/java/com/jth/smm/MainActivity.java
++++ b/app/src/main/java/com/jth/smm/MainActivity.java
+@@ -1170,7 +1170,6 @@
+         showChoicePopup(anchor,
+                 new String[]{"B/W", "Pop", "Mirror"},
+                 new Runnable[]{stub, stub, stub});
+-                        () -> setLensMode(GLView.LensMode.TAPE3),
+     }
+ 
+     int modeColor() {
+@@ -1184,6 +1183,7 @@
+             case REWIND: return MODE_REWIND;
+             case RAMREV: return MODE_RAMREV;
+             case CREV: return MODE_CREV;
++            case TAPE3: return MODE_CREV;
+             default: return MODE_REVERSE;
+         }
+     }
+@@ -1600,2 +1600,12 @@
+         running = true;
++
++        if (glView.getLensMode() == GLView.LensMode.TAPE3) {
++            updateOverlay("Starting Tape3 1080p60 All-I");
++            startTape3Session(() -> {
++                TraceLog.i("TAPE3 active 1080p60 All-I");
++                hideSplashAfterFirstFrame();
++            });
++            return;
++        }
++
+         if (glView.getLensMode() == GLView.LensMode.RAMREV ||
+@@ -2435,1 +2445,104 @@
++    void startTape3Session(Runnable onReady) {
++        if (cameraDevice == null || previewSurface == null) {
++            running = false;
++            updateOverlay("Tape3 camera not ready");
++            return;
++        }
++
++        final Tape3 newTape3 = new Tape3(1920, 1080, 60, 40_000_000);
++
++        try {
++            newTape3.prepare();
++            tape3 = newTape3;
++
++            if (session != null) {
++                try { session.stopRepeating(); } catch (Exception ignored) {}
++                try { session.close(); } catch (Exception ignored) {}
++                session = null;
++            }
++
++            ArrayList<Surface> surfaces = new ArrayList<>();
++            surfaces.add(previewSurface);
++            surfaces.add(newTape3.getInputSurface());
++
++            cameraDevice.createCaptureSession(
++                    surfaces,
++                    new CameraCaptureSession.StateCallback() {
++                        @Override public void onConfigured(CameraCaptureSession s) {
++                            if (tape3 != newTape3 ||
++                                    cameraDevice == null ||
++                                    glView == null ||
++                                    glView.getLensMode() != GLView.LensMode.TAPE3) {
++                                try { s.close(); } catch (Exception ignored) {}
++                                if (tape3 == newTape3) closeTape3();
++                                return;
++                            }
++
++                            try {
++                                session = s;
++                                recordingSessionConfigured = false;
++
++                                CaptureRequest.Builder b =
++                                        cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
++                                b.addTarget(previewSurface);
++                                b.addTarget(newTape3.getInputSurface());
++                                b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
++                                        new Range<Integer>(60, 60));
++                                b.set(CaptureRequest.CONTROL_MODE,
++                                        CaptureRequest.CONTROL_MODE_AUTO);
++                                b.set(CaptureRequest.CONTROL_AE_MODE,
++                                        CaptureRequest.CONTROL_AE_MODE_ON);
++                                applyCameraZoom(b, cameraZoom);
++
++                                newTape3.start();
++                                s.setRepeatingRequest(
++                                        b.build(), frameAuditCaptureCallback, cameraHandler);
++
++                                TraceLog.i(
++                                        "TAPE3 session active 1920x1080@60 targets=preview+AVC");
++                                if (onReady != null) mainHandler.post(onReady);
++                            } catch (Exception e) {
++                                TraceLog.e("TAPE3 session configure error", e);
++                                try { s.close(); } catch (Exception ignored) {}
++                                if (session == s) session = null;
++                                if (tape3 == newTape3) closeTape3();
++                                running = false;
++                                updateOverlay("Tape3 session start failed: " + e);
++                            }
++                        }
++
++                        @Override public void onConfigureFailed(CameraCaptureSession s) {
++                            TraceLog.i("TAPE3 session failed");
++                            try { s.close(); } catch (Exception ignored) {}
++                            if (session == s) session = null;
++                            if (tape3 == newTape3) closeTape3();
++                            running = false;
++                            updateOverlay("Tape3 1080p60 stream combination failed");
++                        }
++                    },
++                    cameraHandler
++            );
++        } catch (Exception e) {
++            TraceLog.e("startTape3Session failed", e);
++            if (tape3 == newTape3) closeTape3();
++            else {
++                try { newTape3.stopAndRelease(); } catch (Exception ignored) {}
++            }
++            running = false;
++            updateOverlay("Tape3 start failed: " + e);
++        }
++    }
++
++    void closeTape3() {
++        Tape3 oldTape3 = tape3;
++        tape3 = null;
++        if (oldTape3 != null) {
++            try {
++                oldTape3.stopAndRelease();
++            } catch (Exception e) {
++                TraceLog.e("Tape3 release failed", e);
++            }
++        }
++    }
++
+     void closeRamCapture() {
+@@ -2940,1 +3053,5 @@
++        // Tape3's MediaCodec input Surface may still be a camera target until
++        // the capture session above is closed. Release Tape3 only afterwards.
++        closeTape3();
++
+         if (encoderSurface != null) {
+@@ -3760,1 +3877,33 @@
++        if (mode == GLView.LensMode.TAPE3) {
++            running = false;
++            recordingFollowing = false;
++            pendingRecordingCycleId = -1;
++            recordingCycleId = -1;
++            loadingCycleId = -1;
++
++            mainHandler.removeCallbacks(ramRevTick);
++            mainHandler.removeCallbacks(rewindTick);
++
++            glView.stopFreeze();
++            glView.stopDubBufReverse();
++            glView.stopStutter();
++            glView.stopFast();
++            glView.releaseAllPlayers();
++            glView.setLensMode(mode);
++
++            captureFps = 60;
++            captureWidth = 1920;
++            captureHeight = 1080;
++            playbackFps = 60;
++            activeTestPreset = "TAPE3_1080P60_ALL_I";
++
++            updateControlButtons();
++            updateScrubUi();
++            updateOverlay("Tape3 1080p60 All-I; restarting");
++
++            if (splashPanel != null) splashPanel.setVisibility(View.GONE);
++            scheduleCameraRecovery("Tape3 mode restart");
++            return;
++        }
++
+         if (mode == GLView.LensMode.DUBBUF_REVERSE) {

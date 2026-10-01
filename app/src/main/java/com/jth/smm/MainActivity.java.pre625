@@ -1,8 +1,8 @@
 // ============================================================
 // Timetoy
 // File: MainActivity.java
-// Version: v0.6.33
-// Build: Functional Rack + Mode Colours + Tape Timing
+// Version: v0.6.24
+// Build: Fast View + Fixed View HUD + Timing Cleanup
 // Date: 2026-08-09
 // ============================================================
 
@@ -15,20 +15,11 @@ import android.content.Context;
 import android.content.pm.PackageManager;
 import android.graphics.SurfaceTexture;
 import android.graphics.BitmapFactory;
-import android.hardware.Sensor;
-import android.hardware.SensorEvent;
-import android.hardware.SensorEventListener;
-import android.hardware.SensorManager;
-
 import android.hardware.camera2.*;
-import android.hardware.camera2.CameraConstrainedHighSpeedCaptureSession;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.MediaCodec;
 import android.media.MediaExtractor;
 import android.media.MediaFormat;
-import android.media.Image;
-import android.media.ImageReader;
-import android.graphics.ImageFormat;
 import android.util.Range;
 import android.util.Size;
 import android.view.*;
@@ -46,24 +37,14 @@ public class MainActivity extends Activity {
     static final int SLOW_CAPTURE_FPS = 240;
     static final int REVERSE_CAPTURE_FPS = 120;
     static final String VERSION =
-            "v0.6.33";
+            "v0.6.24";
 
     static final int SLOW_PLAYBACK_FPS = 24;
-    static final int SLOW_DECODE_MARGIN_MS = 0;
-    static final int SLOW_SEED_MIN_FRAMES = 8;
-    static final long SLOW_SEED_MIN_SPAN_US = 30_000L;
+    static final int SLOW_DECODE_MARGIN_MS = 2100;
+    static final int SLOW_SEED_MIN_FRAMES = 110;
+    static final long SLOW_SEED_MIN_SPAN_US = 450_000L;
     static final int TIMETOY_VIOLET = 0xff7f3fbf;
     static final int TIMETOY_ORANGE = 0xffff7a1a;
-
-    static final int MODE_REVERSE = 0xffff3030;
-    static final int MODE_SLOW    = 0xff90ee90;
-    static final int MODE_FAST    = 0xff168a3f;
-    static final int MODE_FREEZE  = 0xff20dfe5;
-    static final int MODE_STUTTER = 0xffffdf20;
-    static final int MODE_SCRUB   = TIMETOY_VIOLET;
-    static final int MODE_REWIND  = TIMETOY_ORANGE;
-    static final int MODE_RAMREV  = MODE_REVERSE;
-    static final int MODE_CREV    = TIMETOY_ORANGE;
     static final int STANDARD_REVERSE_RECORD_MS = 1600;
     static final int STANDARD_REVERSE_PLAYBACK_MS = 1000;
     static final int TEST_REVERSE_MS = 4000;
@@ -92,10 +73,7 @@ public class MainActivity extends Activity {
     TextView effectControlLabel;
     LinearLayout timeControlRow, slowControlRow, stutterSlicesRow, freezeRateRow, fastSpeedRow;
     LinearLayout modeRail;
-    TextView railTT, railView, railTime, railParam, railFX, railShare;
-    LinearLayout scrubPanel;
-    TextView scrubLeftLabel, scrubRightLabel, scrubPositionLabel;
-    SeekBar scrubSeek;
+    TextView railView, railTime, railParam, railShare;
     Button slices2Button, slices4Button, slices6Button, slices8Button;
     Button fast1Button, fast15Button, fast2Button, fast3Button, fast4Button;
 
@@ -151,7 +129,7 @@ public class MainActivity extends Activity {
     Button freeze8Button;
     Button freeze10Button;
 
-    int playbackFps = 30;
+    int playbackFps = 48;
     float playbackGain = 1.0f;
     float cameraZoom = 1.0f;
 
@@ -163,9 +141,7 @@ public class MainActivity extends Activity {
     int recordCueMs = 0;
     int reverseRecordMs = STANDARD_REVERSE_RECORD_MS;
     int reversePlaybackMs = STANDARD_REVERSE_PLAYBACK_MS;
-    int slowPlaybackMs = 2000;
-    int slowFactor = 10;
-    int stutterTimeMs = 1000;
+    int slowPlaybackMs = 4000;
     int stutterSlices = 4;
     int fastTimeMs = 1000;
     float fastSpeed = 2.0f;
@@ -187,95 +163,7 @@ public class MainActivity extends Activity {
     SurfaceTexture cameraTexture;
     Surface previewSurface;
 
-    RamFrameBuffer ramBuffer;
-    Tape3 tape3;
-    ImageReader ramReader;
-    boolean ramScrubbing = false;
-    long ramSelectedOffsetMs = 0L;
-
-    boolean rewindHolding = false;
-    boolean rewindCatchup = false;
-    boolean rewindAtLimit = false;
-    double rewindDelayMs = 0.0;
-    long rewindLastTickMs = 0L;
-
-    static final long RAMREV_BLOCK_MS = 1000L;
-    long ramRevCycleStartMs = 0L;
-
     MediaSurfaceRecorder recorder;
-
-    SensorManager imuSensorManager;
-    Sensor imuAccelerometer;
-    Sensor imuGyroscope;
-
-    volatile float imuAccelX = 0.0f;
-    volatile float imuAccelY = 0.0f;
-    volatile float imuAccelZ = 0.0f;
-    volatile float imuGyroX = 0.0f;
-    volatile float imuGyroY = 0.0f;
-    volatile float imuGyroZ = 0.0f;
-
-    final SensorEventListener imuListener = new SensorEventListener() {
-        @Override
-        public void onSensorChanged(SensorEvent event) {
-            if (event.sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
-                imuAccelX = event.values[0];
-                imuAccelY = event.values[1];
-                imuAccelZ = event.values[2];
-            } else if (event.sensor.getType() == Sensor.TYPE_GYROSCOPE) {
-                imuGyroX = event.values[0];
-                imuGyroY = event.values[1];
-                imuGyroZ = event.values[2];
-            }
-        }
-
-        @Override
-        public void onAccuracyChanged(Sensor sensor, int accuracy) {
-        }
-    };
-
-    void startImu() {
-        if (imuSensorManager == null) {
-            imuSensorManager =
-                    (SensorManager) getSystemService(Context.SENSOR_SERVICE);
-            if (imuSensorManager != null) {
-                imuAccelerometer = imuSensorManager.getDefaultSensor(
-                        Sensor.TYPE_ACCELEROMETER);
-                imuGyroscope = imuSensorManager.getDefaultSensor(
-                        Sensor.TYPE_GYROSCOPE);
-            }
-        }
-
-        if (imuSensorManager == null) return;
-        imuSensorManager.unregisterListener(imuListener);
-
-        if (imuAccelerometer != null)
-            imuSensorManager.registerListener(
-                    imuListener, imuAccelerometer,
-                    SensorManager.SENSOR_DELAY_GAME);
-
-        if (imuGyroscope != null)
-            imuSensorManager.registerListener(
-                    imuListener, imuGyroscope,
-                    SensorManager.SENSOR_DELAY_GAME);
-    }
-
-    void stopImu() {
-        if (imuSensorManager != null)
-            imuSensorManager.unregisterListener(imuListener);
-    }
-
-    volatile double tape3SensorFrameMs = 0.0;
-    volatile double tape3ExposureMs = 0.0;
-    volatile int tape3Iso = 0;
-    volatile int tape3AeState = -1;
-    volatile double tape3CallbackFps = 0.0;
-    volatile String tape3RequestedAe = "--";
-
-    long tape3AuditFirstNs = 0L;
-    long tape3AuditLastLogNs = 0L;
-    long tape3AuditFrames = 0L;
-    long tape3AuditLastFrames = 0L;
 
     final CameraCaptureSession.CaptureCallback frameAuditCaptureCallback =
             new CameraCaptureSession.CaptureCallback() {
@@ -287,50 +175,6 @@ public class MainActivity extends Activity {
                 ) {
                     Long timestamp = result.get(CaptureResult.SENSOR_TIMESTAMP);
                     FrameAudit.cameraCapture(timestamp == null ? -1L : timestamp);
-
-                    if (glView != null && glView.getLensMode() == GLView.LensMode.TAPE3) {
-                        tape3AuditFrames++;
-                        Long tape3FrameDuration =
-                                result.get(CaptureResult.SENSOR_FRAME_DURATION);
-                        Long tape3Exposure =
-                                result.get(CaptureResult.SENSOR_EXPOSURE_TIME);
-                        Integer tape3Sensitivity =
-                                result.get(CaptureResult.SENSOR_SENSITIVITY);
-                        Integer tape3Ae =
-                                result.get(CaptureResult.CONTROL_AE_STATE);
-                        Range<Integer> tape3AeRequest =
-                                request.get(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE);
-
-                        tape3SensorFrameMs = tape3FrameDuration == null
-                                ? 0.0 : tape3FrameDuration / 1000000.0;
-                        tape3ExposureMs = tape3Exposure == null
-                                ? 0.0 : tape3Exposure / 1000000.0;
-                        tape3Iso = tape3Sensitivity == null ? 0 : tape3Sensitivity;
-                        tape3AeState = tape3Ae == null ? -1 : tape3Ae;
-                        tape3RequestedAe = tape3AeRequest == null
-                                ? "--" : tape3AeRequest.toString();
-
-                        long nowNs = System.nanoTime();
-                        if (tape3AuditFirstNs == 0L) {
-                            tape3AuditFirstNs = nowNs;
-                            tape3AuditLastLogNs = nowNs;
-                            tape3AuditLastFrames = tape3AuditFrames;
-                        } else if (nowNs - tape3AuditLastLogNs >= 5000000000L) {
-                            long deltaFrames = tape3AuditFrames - tape3AuditLastFrames;
-                            double seconds = (nowNs - tape3AuditLastLogNs) / 1000000000.0;
-                            tape3CallbackFps = seconds > 0.0
-                                    ? deltaFrames / seconds : 0.0;
-
-                            Long frameDuration = result.get(CaptureResult.SENSOR_FRAME_DURATION);
-                            Range<Integer> aeRange = request.get(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE);
-                            TraceLog.i("TAPE3 CAMERA frames=" + tape3AuditFrames +
-                                    " fps=" + (deltaFrames / seconds) +
-                                    " frameDurationMs=" + (frameDuration == null ? -1.0 : frameDuration / 1000000.0) +
-                                    " requestedAE=" + aeRange);
-                            tape3AuditLastLogNs = nowNs;
-                            tape3AuditLastFrames = tape3AuditFrames;
-                        }
-                    }
                 }
             };
 
@@ -409,150 +253,12 @@ public class MainActivity extends Activity {
         }
     };
 
-    final Runnable rewindTick = new Runnable() {
-        @Override public void run() {
-            if (glView == null ||
-                    glView.getLensMode() != GLView.LensMode.REWIND ||
-                    (!rewindHolding && !rewindCatchup)) {
-                rewindLastTickMs = 0L;
-                return;
-            }
-
-            long now = SystemClock.elapsedRealtime();
-            if (rewindLastTickMs == 0L) rewindLastTickMs = now;
-            long dt = Math.max(0L, Math.min(50L, now - rewindLastTickMs));
-            rewindLastTickMs = now;
-
-            double maxDelayMs = ramBuffer == null
-                    ? 0.0
-                    : ramBuffer.getHistorySeconds() * 1000.0;
-
-            if (rewindHolding) {
-                if (!rewindAtLimit) {
-                    rewindDelayMs += 2.0 * dt;
-
-                    if (rewindDelayMs >= maxDelayMs) {
-                        rewindDelayMs = maxDelayMs;
-                        rewindAtLimit = true;
-                    }
-                }
-            } else if (rewindCatchup) {
-                rewindDelayMs -= 2.0 * dt;
-
-                if (rewindDelayMs <= 0.0) {
-                    rewindDelayMs = 0.0;
-                    rewindCatchup = false;
-                    rewindAtLimit = false;
-                    glView.showRamLive();
-                    updateOverlay("Rewind LIVE");
-                    return;
-                }
-            }
-
-            if (rewindDelayMs > 0.0) {
-                glView.showRamOffsetMs(-Math.round(rewindDelayMs));
-            } else {
-                glView.showRamLive();
-            }
-
-            mainHandler.postDelayed(this, 1000L / 60L);
-        }
-    };
-
-    void startRewindHold() {
-        if (glView == null ||
-                glView.getLensMode() != GLView.LensMode.REWIND ||
-                ramBuffer == null ||
-                ramBuffer.getCount() < 2) {
-            return;
-        }
-
-        rewindHolding = true;
-        rewindCatchup = false;
-        rewindAtLimit = false;
-        rewindLastTickMs = SystemClock.elapsedRealtime();
-
-        mainHandler.removeCallbacks(rewindTick);
-        mainHandler.post(rewindTick);
-
-        updateOverlay("Rewind 1x");
-    }
-
-    void releaseRewindHold() {
-        if (glView == null ||
-                glView.getLensMode() != GLView.LensMode.REWIND) {
-            return;
-        }
-
-        rewindHolding = false;
-
-        if (rewindDelayMs <= 0.0) {
-            rewindCatchup = false;
-            glView.showRamLive();
-            return;
-        }
-
-        rewindCatchup = true;
-        rewindAtLimit = false;
-        rewindLastTickMs = SystemClock.elapsedRealtime();
-
-        mainHandler.removeCallbacks(rewindTick);
-        mainHandler.post(rewindTick);
-
-        updateOverlay("Rewind forward 3x");
-    }
-
-    final Runnable ramRevTick = new Runnable() {
-        @Override public void run() {
-            if (glView == null ||
-                    (glView.getLensMode() != GLView.LensMode.RAMREV &&
-                     glView.getLensMode() != GLView.LensMode.CREV)) {
-                ramRevCycleStartMs = 0L;
-                return;
-            }
-
-            if (ramBuffer == null ||
-                    ramBuffer.getHistorySeconds() < 2.05) {
-                glView.showRamLive();
-                mainHandler.postDelayed(this, 1000L / 60L);
-                return;
-            }
-
-            long now = SystemClock.elapsedRealtime();
-
-            if (ramRevCycleStartMs == 0L) {
-                ramRevCycleStartMs = now;
-            }
-
-            long elapsed = now - ramRevCycleStartMs;
-
-            if (elapsed >= RAMREV_BLOCK_MS) {
-                ramRevCycleStartMs +=
-                        (elapsed / RAMREV_BLOCK_MS) * RAMREV_BLOCK_MS;
-                elapsed = now - ramRevCycleStartMs;
-            }
-
-            long delayMs = Math.round(2.0 * elapsed);
-            glView.showRamOffsetMs(-delayMs);
-
-            mainHandler.postDelayed(this, 1000L / 60L);
-        }
-    };
-
-    void startRamRev() {
-        ramRevCycleStartMs = 0L;
-        mainHandler.removeCallbacks(ramRevTick);
-        mainHandler.post(ramRevTick);
-        updateOverlay("RAMRev 1080p60");
-    }
-
     final Runnable hudHeartbeat =
             new Runnable() {
                 @Override
                 public void run() {
                     hudTicks++;
                     refreshOverlay();
-                    updateScrubUi();
 
                     hudHandler.postDelayed(
                             this,
@@ -619,16 +325,7 @@ public class MainActivity extends Activity {
 
         glView =
                 new GLView(this);
-        glView.setPortraitOrientation(
-                getResources().getConfiguration().orientation ==
-                        android.content.res.Configuration.ORIENTATION_PORTRAIT
-        );
-        captureFps = 60;
-        captureWidth = 1920;
-        captureHeight = 1080;
-        playbackFps = 60;
-        activeTestPreset = "TAPE3_1080P60";
-        glView.setLensMode(GLView.LensMode.TAPE3);
+        glView.setLensMode(GLView.LensMode.DUBBUF_REVERSE);
 
         root.addView(
                 glView,
@@ -643,33 +340,20 @@ public class MainActivity extends Activity {
         buildRecordProgress(root);
         buildHud(root);
         buildModeRail(root);
-        buildScrubControl(root);
         buildWatermark(root);
         buildFlashLabel(root);
         buildSplash(root);
 
         setContentView(root);
 
-        startImu();
+        root.setOnClickListener(v -> {
+            hudVisible = !hudVisible;
 
-
-        glView.setOnTouchListener((v, event) -> {
-            if (glView.getLensMode() != GLView.LensMode.REWIND) {
-                return false;
-            }
-
-            switch (event.getActionMasked()) {
-                case MotionEvent.ACTION_DOWN:
-                    startRewindHold();
-                    return true;
-
-                case MotionEvent.ACTION_UP:
-                case MotionEvent.ACTION_CANCEL:
-                    releaseRewindHold();
-                    return true;
-            }
-
-            return true;
+            hudPanel.setVisibility(
+                    hudVisible
+                            ? View.VISIBLE
+                            : View.GONE
+            );
         });
 
         glView.listener = st -> {
@@ -1041,296 +725,31 @@ public class MainActivity extends Activity {
         });
     }
 
-    void buildScrubControl(FrameLayout root) {
-        scrubPanel = new LinearLayout(this);
-        scrubPanel.setOrientation(LinearLayout.VERTICAL);
-        scrubPanel.setPadding(dp(12), dp(8), dp(12), dp(8));
-        scrubPanel.setBackgroundColor(0xaa000000);
-
-        LinearLayout labels = new LinearLayout(this);
-        labels.setOrientation(LinearLayout.HORIZONTAL);
-
-        scrubLeftLabel = new TextView(this);
-        scrubLeftLabel.setText("-0.0 s");
-        scrubLeftLabel.setTextColor(0xffffffff);
-        scrubLeftLabel.setTextSize(14);
-
-        scrubPositionLabel = new TextView(this);
-        scrubPositionLabel.setText("LIVE");
-        scrubPositionLabel.setTextColor(0xffcccccc);
-        scrubPositionLabel.setTextSize(13);
-        scrubPositionLabel.setGravity(Gravity.CENTER);
-
-        scrubRightLabel = new TextView(this);
-        scrubRightLabel.setText("0 s");
-        scrubRightLabel.setTextColor(0xffffffff);
-        scrubRightLabel.setTextSize(14);
-        scrubRightLabel.setGravity(Gravity.RIGHT);
-
-        labels.addView(scrubLeftLabel, new LinearLayout.LayoutParams(0, -2, 1f));
-        labels.addView(scrubPositionLabel, new LinearLayout.LayoutParams(0, -2, 1f));
-        labels.addView(scrubRightLabel, new LinearLayout.LayoutParams(0, -2, 1f));
-
-        scrubSeek = new SeekBar(this);
-        scrubSeek.setMax(1000);
-        scrubSeek.setProgress(1000);
-        scrubSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override public void onStartTrackingTouch(SeekBar seekBar) { ramScrubbing = true; }
-
-            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                if (!fromUser || ramBuffer == null) return;
-                double history = ramBuffer.getHistorySeconds();
-                long offsetMs = -Math.round(history * 1000.0 * (1000 - progress) / 1000.0);
-                ramSelectedOffsetMs = offsetMs;
-
-                if (progress >= 999) {
-                    scrubPositionLabel.setText("LIVE");
-                    if (glView != null) glView.showRamLive();
-                } else {
-                    scrubPositionLabel.setText(
-                            String.format(Locale.US, "%.1f s", offsetMs / 1000.0));
-                    if (glView != null) glView.showRamOffsetMs(offsetMs);
-                }
-            }
-
-            @Override public void onStopTrackingTouch(SeekBar seekBar) { ramScrubbing = false; }
-        });
-
-        scrubPanel.addView(labels);
-        scrubPanel.addView(scrubSeek);
-
-        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                -1, -2, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-        lp.setMargins(dp(16), 0, dp(16), dp(18));
-        root.addView(scrubPanel, lp);
-        scrubPanel.setVisibility(View.GONE);
-    }
-
-    void updateScrubUi() {
-        if (scrubPanel == null) return;
-        boolean active = glView != null && glView.getLensMode() == GLView.LensMode.SCRUB;
-        scrubPanel.setVisibility(active ? View.VISIBLE : View.GONE);
-        if (!active) return;
-
-        double history = ramBuffer == null ? 0.0 : ramBuffer.getHistorySeconds();
-        scrubLeftLabel.setText(String.format(Locale.US, "-%.1f s", history));
-        scrubRightLabel.setText("0 s");
-        if (!ramScrubbing && scrubSeek.getProgress() >= 999) scrubPositionLabel.setText("LIVE");
-    }
-
     void buildModeRail(FrameLayout root) {
         modeRail = new LinearLayout(this);
         modeRail.setOrientation(LinearLayout.VERTICAL);
-        modeRail.setPadding(dp(6), dp(6), dp(6), dp(6));
-        modeRail.setBackgroundColor(0x66000000);
+        modeRail.setPadding(dp(8), dp(8), dp(8), dp(8));
+        modeRail.setBackgroundColor(0x55000000);
 
-        railTT = makeRailText("TT");
-        railTT.setTextSize(18);
-        railView = makeRailText("REVERSE");
-        railTime = makeRailText("1.0 S");
-        railParam = makeRailText("—");
-        railFX = makeRailText("FX");
-        railShare = makeRailText("SHARE");
+        TextView tt = makeRailText("TT");
+        tt.setTextColor(TIMETOY_VIOLET);
+        tt.setTextSize(18);
+        railView = makeRailText("Reverse");
+        railTime = makeRailText("1.0 s");
+        railParam = makeRailText("");
+        railShare = makeRailText("Share");
 
-        modeRail.addView(railTT);
+        modeRail.addView(tt);
         modeRail.addView(railView);
         modeRail.addView(railTime);
         modeRail.addView(railParam);
-        modeRail.addView(railFX);
         modeRail.addView(railShare);
 
-        railTT.setOnClickListener(v ->
-                new android.app.AlertDialog.Builder(this)
-                        .setTitle("TimeToy")
-                        .setMessage("TimeToy\n" + VERSION + "\nby yo")
-                        .setPositiveButton("OK", null)
-                        .show());
-
-        railView.setOnClickListener(v -> showModeChoices(railView));
-        railTime.setOnClickListener(v -> showTimeChoices(railTime));
-        railParam.setOnClickListener(v -> showFactorChoices(railParam));
-        railFX.setOnClickListener(v -> showFxChoices(railFX));
-        railShare.setOnClickListener(v -> flashStatus("Share — coming later", 900));
-
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                dp(122), -2, Gravity.TOP | Gravity.LEFT);
+                dp(116), -2, Gravity.TOP | Gravity.LEFT);
         lp.setMargins(dp(10), dp(10), 0, 0);
         root.addView(modeRail, lp);
         updateModeRail();
-    }
-
-    void showChoicePopup(View anchor, String[] labels, Runnable[] actions) {
-        showChoicePopup(anchor, labels, actions, null);
-    }
-
-    void showChoicePopup(View anchor, String[] labels, Runnable[] actions, int[] colors) {
-        final PopupWindow[] holder = new PopupWindow[1];
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(4), dp(4), dp(4), dp(4));
-        box.setBackgroundColor(0xee202020);
-
-        for (int i = 0; i < labels.length; i++) {
-            final int index = i;
-            Button b = new Button(this);
-            b.setAllCaps(false);
-            b.setText(labels[i]);
-            b.setTextSize(13);
-            b.setMinHeight(0);
-            b.setMinimumHeight(0);
-            b.setPadding(dp(8), dp(4), dp(8), dp(4));
-            if (colors != null && i < colors.length) {
-                b.setBackgroundColor(colors[i]);
-                b.setTextColor(0xff000000);
-            }
-            b.setOnClickListener(v -> {
-                if (actions[index] != null) actions[index].run();
-                if (holder[0] != null) holder[0].dismiss();
-            });
-            box.addView(b, new LinearLayout.LayoutParams(dp(170), dp(44)));
-        }
-
-        PopupWindow popup = new PopupWindow(
-                box, dp(178), WindowManager.LayoutParams.WRAP_CONTENT, true);
-        holder[0] = popup;
-        popup.setBackgroundDrawable(
-                new android.graphics.drawable.ColorDrawable(0xee202020));
-        popup.setOutsideTouchable(true);
-        popup.setElevation(dp(6));
-        popup.showAsDropDown(anchor, dp(4), -anchor.getHeight());
-    }
-
-    void showModeChoices(View anchor) {
-        showChoicePopup(anchor,
-                new String[]{"TAPE3", "CREV", "RAMREV", "REVERSE", "SLOW", "FAST", "FREEZE", "STUTTER", "SCRUB", "REWIND"},
-                new Runnable[]{
-                        () -> setLensMode(GLView.LensMode.TAPE3),
-                        () -> setLensMode(GLView.LensMode.CREV),
-                        () -> setLensMode(GLView.LensMode.RAMREV),
-                        () -> setLensMode(GLView.LensMode.DUBBUF_REVERSE),
-                        () -> setLensMode(GLView.LensMode.SLOW),
-                        () -> setLensMode(GLView.LensMode.FAST),
-                        () -> setLensMode(GLView.LensMode.FREEZE),
-                        () -> setLensMode(GLView.LensMode.STUTTER),
-                        () -> setLensMode(GLView.LensMode.SCRUB),
-                        () -> setLensMode(GLView.LensMode.REWIND)
-                },
-                new int[]{
-                        MODE_CREV, MODE_CREV, MODE_RAMREV, MODE_REVERSE, MODE_SLOW, MODE_FAST,
-                        MODE_FREEZE, MODE_STUTTER, MODE_SCRUB, MODE_REWIND
-                });
-    }
-
-    void showTimeChoices(View anchor) {
-        GLView.LensMode m = glView.getLensMode();
-        if (m == GLView.LensMode.SLOW) {
-            int[] ms = {500, 1000, 2000, 3000, 4000};
-            String[] labels = {"0.5 S", "1.0 S", "2.0 S", "3.0 S", "4.0 S"};
-            Runnable[] a = new Runnable[ms.length];
-            for (int i = 0; i < ms.length; i++) {
-                final int v = ms[i]; a[i] = () -> setModePlaybackDuration(v);
-            }
-            showChoicePopup(anchor, labels, a);
-        } else if (m == GLView.LensMode.FREEZE) {
-            int[] ms = {125, 167, 250, 333, 500};
-            String[] labels = {"1/8 S", "1/6 S", "1/4 S", "1/3 S", "1/2 S"};
-            Runnable[] a = new Runnable[ms.length];
-            for (int i = 0; i < ms.length; i++) {
-                final int v = ms[i]; a[i] = () -> setModePlaybackDuration(v);
-            }
-            showChoicePopup(anchor, labels, a);
-        } else if (m == GLView.LensMode.STUTTER) {
-            int[] ms = {200, 500, 1000, 1500, 2000};
-            String[] labels = {"0.2 S", "0.5 S", "1.0 S", "1.5 S", "2.0 S"};
-            Runnable[] a = new Runnable[ms.length];
-            for (int i = 0; i < ms.length; i++) {
-                final int v = ms[i]; a[i] = () -> setModePlaybackDuration(v);
-            }
-            showChoicePopup(anchor, labels, a);
-        } else {
-            int[] ms = {500, 1000, 1500, 2000};
-            String[] labels = {"0.5 S", "1.0 S", "1.5 S", "2.0 S"};
-            Runnable[] a = new Runnable[ms.length];
-            for (int i = 0; i < ms.length; i++) {
-                final int v = ms[i]; a[i] = () -> setModePlaybackDuration(v);
-            }
-            showChoicePopup(anchor, labels, a);
-        }
-    }
-
-    void showFactorChoices(View anchor) {
-        GLView.LensMode m = glView.getLensMode();
-        if (m == GLView.LensMode.SLOW) {
-            int[] f = {4, 6, 8, 10, 12};
-            String[] labels = {"4×", "6×", "8×", "10×", "12×"};
-            Runnable[] a = new Runnable[f.length];
-            for (int i = 0; i < f.length; i++) {
-                final int v = f[i]; a[i] = () -> setSlowFactor(v);
-            }
-            showChoicePopup(anchor, labels, a);
-        } else if (m == GLView.LensMode.FAST) {
-            float[] f = {1.5f, 2.0f, 2.5f, 3.0f};
-            String[] labels = {"1.5×", "2×", "2.5×", "3×"};
-            Runnable[] a = new Runnable[f.length];
-            for (int i = 0; i < f.length; i++) {
-                final float v = f[i]; a[i] = () -> setFastSpeed(v);
-            }
-            showChoicePopup(anchor, labels, a);
-        } else if (m == GLView.LensMode.STUTTER) {
-            int[] f = {2, 3, 4, 6, 8};
-            String[] labels = {"2×", "3×", "4×", "6×", "8×"};
-            Runnable[] a = new Runnable[f.length];
-            for (int i = 0; i < f.length; i++) {
-                final int v = f[i]; a[i] = () -> setStutterSlices(v);
-            }
-            showChoicePopup(anchor, labels, a);
-        } else {
-            flashStatus("No Factor for " + currentLensTitle(), 700);
-        }
-    }
-
-    void showFxChoices(View anchor) {
-        Runnable stub = () -> flashStatus("FX — coming later", 900);
-        showChoicePopup(anchor,
-                new String[]{"B/W", "Pop", "Mirror"},
-                new Runnable[]{stub, stub, stub});
-                        
-    }
-
-    int modeColor() {
-        if (glView == null) return MODE_REVERSE;
-        switch (glView.getLensMode()) {
-            case SLOW: return MODE_SLOW;
-            case FAST: return MODE_FAST;
-            case FREEZE: return MODE_FREEZE;
-            case STUTTER: return MODE_STUTTER;
-            case SCRUB: return MODE_SCRUB;
-            case REWIND: return MODE_REWIND;
-            case RAMREV: return MODE_RAMREV;
-            case CREV: return MODE_CREV;
-            default: return MODE_REVERSE;
-        }
-    }
-
-    void applyModeColor() {
-        int c = modeColor();
-        TextView[] rack = {railTT, railView, railTime, railParam, railFX, railShare};
-        for (TextView v : rack) {
-            if (v != null) {
-                v.setBackgroundColor(c);
-                v.setTextColor(0xff000000);
-            }
-        }
-
-        if (recordingFrame != null) {
-            android.graphics.drawable.GradientDrawable border =
-                    new android.graphics.drawable.GradientDrawable();
-            border.setColor(android.graphics.Color.TRANSPARENT);
-            border.setStroke(2, c);
-            recordingFrame.setBackground(border);
-        }
-        if (recordCue != null) recordCue.setBackgroundColor(c);
-        if (recordProgress != null) recordProgress.setBackgroundColor(c);
     }
 
     TextView makeRailText(String text) {
@@ -1354,35 +773,19 @@ public class MainActivity extends Activity {
         if (modeRail == null || glView == null) return;
         GLView.LensMode m = glView.getLensMode();
         String time = "";
-        String factor = "—";
+        String param = "";
 
-        if (m == GLView.LensMode.CREV) {
-            time = ramBuffer == null ? "0.0 s" :
-                    String.format(Locale.US, "%.1f s", ramBuffer.getHistorySeconds());
-            factor = "1x";
-        } else if (m == GLView.LensMode.RAMREV) {
-            time = "1.0 s";
-            factor = "1x";
-        } else if (m == GLView.LensMode.REWIND) {
-            time = ramBuffer == null
-                    ? "0.0 s"
-                    : String.format(Locale.US, "%.1f s", ramBuffer.getHistorySeconds());
-            factor = "1x / 3x";
-        } else if (m == GLView.LensMode.SCRUB) {
-            time = ramBuffer == null
-                    ? "0.0 s"
-                    : String.format(Locale.US, "%.1f s", ramBuffer.getHistorySeconds());
-        } else if (m == GLView.LensMode.SLOW) {
+        if (m == GLView.LensMode.SLOW) {
             time = formatSeconds(slowPlaybackMs);
-            factor = slowFactor + "×";
+            param = slowdownText();
         } else if (m == GLView.LensMode.DUBBUF_REVERSE) {
             time = formatSeconds(reversePlaybackMs);
         } else if (m == GLView.LensMode.STUTTER) {
-            time = formatSeconds(stutterTimeMs);
-            factor = stutterSlices + "×";
+            time = formatSeconds(reversePlaybackMs);
+            param = stutterSlices + " slices";
         } else if (m == GLView.LensMode.FAST) {
             time = formatSeconds(fastTimeMs);
-            factor = Math.abs(fastSpeed - Math.round(fastSpeed)) < 0.001f
+            param = Math.abs(fastSpeed - Math.round(fastSpeed)) < 0.001f
                     ? String.format(Locale.US, "%.0f×", fastSpeed)
                     : String.format(Locale.US, "%.1f×", fastSpeed);
         } else if (m == GLView.LensMode.FREEZE) {
@@ -1390,12 +793,10 @@ public class MainActivity extends Activity {
             time = formatSeconds(Math.round(1000.0f / Math.max(2.0f, hz)));
         }
 
-        railView.setText(currentLensTitle().toUpperCase(Locale.US));
-        railTime.setText(time.toUpperCase(Locale.US));
-        railParam.setText(factor);
-        railFX.setText("FX");
-        railShare.setText("SHARE");
-        applyModeColor();
+        railView.setText(currentLensTitle());
+        railTime.setText(time);
+        railParam.setText(param);
+        railShare.setText("Share");
     }
 
     void buildHud(FrameLayout root) {
@@ -1794,73 +1195,6 @@ public class MainActivity extends Activity {
         }
 
         running = true;
-
-        if (glView.getLensMode() == GLView.LensMode.TAPE3) {
-            updateOverlay("Starting Tape3 1080p60 All-I");
-            startTape3Session(() -> {
-                TraceLog.i("TAPE3 active 1080p60 All-I");
-                mainHandler.postDelayed(() -> {
-                    if (tape3 != null &&
-                            glView.getLensMode() == GLView.LensMode.TAPE3) {
-                        glView.showTape3Delay();
-                        TraceLog.i("TAPE3 DELAY display selected 1.000s");
-                    }
-                }, 1500L);
-                hideSplashAfterFirstFrame();
-            });
-            return;
-        }
-        if (glView.getLensMode() == GLView.LensMode.RAMREV ||
-                glView.getLensMode() == GLView.LensMode.CREV) {
-            updateOverlay(glView.getLensMode() == GLView.LensMode.CREV
-                    ? "Starting CRev 1080p60" : "Starting RAMRev 1080p60");
-            TraceLog.i("DBG CRev 01 before startRamPreviewSession");
-            startRamPreviewSession(() -> {
-                TraceLog.i("DBG CRev 20 onReady entered");
-                TraceLog.i("DBG CRev 21 before setRamBuffer");
-                glView.setRamBuffer(ramBuffer);
-                TraceLog.i("DBG CRev 22 before showRamLive");
-                glView.showRamLive();
-                TraceLog.i("DBG CRev 23 before startRamRev");
-                startRamRev();
-                TraceLog.i("DBG CRev 24 onReady complete");
-
-                TraceLog.i("RAMRev active 1080p60 reverse 1x");
-                hideSplashAfterFirstFrame();
-            });
-            TraceLog.i("DBG CRev 02 startRamPreviewSession returned");
-            return;
-        }
-
-        if (glView.getLensMode() == GLView.LensMode.REWIND) {
-            updateOverlay("Starting RAM Rewind 1080p60");
-            startRamPreviewSession(() -> {
-                glView.setRamBuffer(ramBuffer);
-                glView.showRamLive();
-
-                rewindHolding = false;
-                rewindCatchup = false;
-                rewindAtLimit = false;
-                rewindDelayMs = 0.0;
-
-                TraceLog.i("RAM Rewind active 1x back / 3x forward");
-                hideSplashAfterFirstFrame();
-            });
-            return;
-        }
-
-        if (glView.getLensMode() == GLView.LensMode.SCRUB) {
-            updateOverlay("Starting RAM Scrub 1080p60");
-            startRamPreviewSession(() -> {
-                glView.setRamBuffer(ramBuffer);
-                glView.showRamLive();
-                updateScrubUi();
-                TraceLog.i("RAM Scrub active; hide splash");
-                hideSplashAfterFirstFrame();
-            });
-            return;
-        }
-
         if (glView.getLensMode() == GLView.LensMode.DUBBUF_REVERSE) {
             updateOverlay("Starting DubBuf preview");
             startPreviewOnlySession(() -> glView.startDubBufReverse(reversePlaybackMs, () -> {
@@ -2494,221 +1828,6 @@ public class MainActivity extends Activity {
 
 
 
-    void startTape3Session(Runnable onReady) {
-        if (cameraDevice == null || previewSurface == null) {
-            if (onReady != null) onReady.run();
-            return;
-        }
-
-        try {
-            // First prove Samsungs constrained high-speed path at 1080p120.
-            // Once proven, Tape3 can decide how best to produce its 60 fps tape.
-            final int tape3CameraFps = 120;
-            final Tape3 newTape3 =
-                    new Tape3(1920, 1080, tape3CameraFps, 40000000, glView.getDecoderSurface(0));
-            newTape3.prepare();
-            tape3 = newTape3;
-
-            tape3AuditFirstNs = 0L;
-            tape3AuditLastLogNs = 0L;
-            tape3AuditFrames = 0L;
-            tape3AuditLastFrames = 0L;
-
-            if (session != null) {
-                try { session.close(); } catch (Exception ignored) {}
-                session = null;
-            }
-
-            ArrayList<Surface> surfaces = new ArrayList<>();
-            surfaces.add(previewSurface);
-            surfaces.add(newTape3.getInputSurface());
-
-            TraceLog.i("TAPE3 HS requesting constrained 1920x1080@120 preview+AVC");
-
-            cameraDevice.createConstrainedHighSpeedCaptureSession(
-                    surfaces,
-                    new CameraCaptureSession.StateCallback() {
-                        @Override public void onConfigured(CameraCaptureSession s) {
-                            try {
-                                if (tape3 != newTape3 ||
-                                        glView.getLensMode() != GLView.LensMode.TAPE3) {
-                                    try { s.close(); } catch (Exception ignored) {}
-                                    newTape3.stopAndRelease();
-                                    return;
-                                }
-
-                                CameraConstrainedHighSpeedCaptureSession hs =
-                                        (CameraConstrainedHighSpeedCaptureSession) s;
-                                session = s;
-                                recordingSessionConfigured = false;
-
-                                CaptureRequest.Builder b =
-                                        cameraDevice.createCaptureRequest(
-                                                CameraDevice.TEMPLATE_RECORD);
-                                b.addTarget(previewSurface);
-                                b.addTarget(newTape3.getInputSurface());
-                                b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
-                                        new Range<Integer>(30, 120));
-                                b.set(CaptureRequest.CONTROL_MODE,
-                                        CaptureRequest.CONTROL_MODE_AUTO);
-                                b.set(CaptureRequest.CONTROL_AE_MODE,
-                                        CaptureRequest.CONTROL_AE_MODE_ON);
-                                applyCameraZoom(b, cameraZoom);
-
-                                List<CaptureRequest> burst =
-                                        hs.createHighSpeedRequestList(b.build());
-
-                                newTape3.start();
-                                hs.setRepeatingBurst(
-                                        burst,
-                                        frameAuditCaptureCallback,
-                                        cameraHandler);
-
-                                TraceLog.i(
-                                        "TAPE3 HS active 1920x1080@120 burstRequests=" +
-                                        burst.size() + " targets=preview+AVC");
-                                if (onReady != null) mainHandler.post(onReady);
-                            } catch (Exception e) {
-                                TraceLog.e("TAPE3 HS session configure error", e);
-                            }
-                        }
-
-                        @Override public void onConfigureFailed(CameraCaptureSession s) {
-                            TraceLog.i("TAPE3 HS camera session failed");
-                            updateOverlay(
-                                    "Tape3 1080p120 high-speed stream combination failed");
-                            if (tape3 == newTape3) tape3 = null;
-                            newTape3.stopAndRelease();
-                        }
-                    },
-                    cameraHandler
-            );
-        } catch (Exception e) {
-            TraceLog.e("startTape3Session HS failed", e);
-            updateOverlay("Tape3 high-speed start failed: " + e);
-            if (tape3 != null) {
-                tape3.stopAndRelease();
-                tape3 = null;
-            }
-        }
-    }
-
-    void closeTape3() {
-        Tape3 oldTape3 = tape3;
-        tape3 = null;
-        if (oldTape3 != null) {
-            try { oldTape3.stopAndRelease(); } catch (Exception ignored) {}
-        }
-    }
-
-    void startRamPreviewSession(Runnable onReady) {
-        TraceLog.i("DBG RAM 01 enter startRamPreviewSession");
-        if (cameraDevice == null || previewSurface == null) {
-            if (onReady != null) onReady.run();
-            return;
-        }
-
-        TraceLog.i("DBG RAM 03 before closeRamCapture");
-        closeRamCapture();
-        TraceLog.i("DBG RAM 04 after closeRamCapture");
-
-        try {
-            TraceLog.i("DBG RAM 05 before new RamFrameBuffer");
-            ramBuffer = new RamFrameBuffer();
-            TraceLog.i("DBG RAM 06 after new RamFrameBuffer");
-            TraceLog.i("DBG RAM 07 before ImageReader.newInstance");
-            ramReader = ImageReader.newInstance(1920, 1080, ImageFormat.YUV_420_888, 4);
-            TraceLog.i("DBG RAM 08 after ImageReader.newInstance");
-
-            ramReader.setOnImageAvailableListener(reader -> {
-                Image image = null;
-                long beginNs = System.nanoTime();
-                try {
-                    image = reader.acquireNextImage();
-                    if (image != null && ramBuffer != null) ramBuffer.addImage(image);
-                } catch (Throwable t) {
-                    TraceLog.e("RAM frame copy failed",
-                            t instanceof Exception ? (Exception)t : new RuntimeException(t));
-                } finally {
-                    if (image != null) try { image.close(); } catch (Exception ignored) {}
-                }
-                long copyNs = System.nanoTime() - beginNs;
-                if (copyNs >= 10_000_000L)
-                    TraceLog.i("RAM copy slow ms=" + (copyNs / 1_000_000.0));
-            }, cameraHandler);
-            TraceLog.i("DBG RAM 09 listener installed");
-
-            if (session != null) {
-                TraceLog.i("DBG RAM 10 closing old session");
-                try { session.close(); } catch (Exception ignored) {}
-                session = null;
-            }
-
-            TraceLog.i("DBG RAM 11 building surface list");
-            ArrayList<Surface> surfaces = new ArrayList<>();
-            surfaces.add(previewSurface);
-            surfaces.add(ramReader.getSurface());
-
-            TraceLog.i("DBG RAM 12 before createCaptureSession");
-            cameraDevice.createCaptureSession(
-                    surfaces,
-                    new CameraCaptureSession.StateCallback() {
-                        @Override public void onConfigured(CameraCaptureSession s) {
-                            TraceLog.i("DBG RAM 13 onConfigured entered");
-                            try {
-                                session = s;
-                                recordingSessionConfigured = false;
-
-                                TraceLog.i("DBG RAM 14 before createCaptureRequest");
-                                CaptureRequest.Builder b =
-                                        cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
-                                TraceLog.i("DBG RAM 15 request builder created");
-                                b.addTarget(previewSurface);
-                                b.addTarget(ramReader.getSurface());
-                                b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
-                                        new Range<Integer>(60, 60));
-                                b.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
-                                b.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
-                                applyCameraZoom(b, cameraZoom);
-
-                                TraceLog.i("DBG RAM 16 before setRepeatingRequest");
-                                s.setRepeatingRequest(
-                                        b.build(), frameAuditCaptureCallback, cameraHandler);
-                                TraceLog.i("DBG RAM 17 repeating request active");
-                                TraceLog.i("RAM preview session active 1920x1080@60 targets=preview+YUV");
-                                if (onReady != null) mainHandler.post(onReady);
-                            } catch (Exception e) {
-                                TraceLog.e("RAM session configure error", e);
-                            }
-                        }
-
-                        @Override public void onConfigureFailed(CameraCaptureSession s) {
-                            TraceLog.i("RAM preview session failed");
-                            updateOverlay("RAM 1080p60 stream combination failed");
-                        }
-                    },
-                    cameraHandler
-            );
-            TraceLog.i("DBG RAM 18 createCaptureSession returned");
-        } catch (Exception e) {
-            TraceLog.e("startRamPreviewSession failed", e);
-            updateOverlay("RAM Scrub start failed: " + e);
-        }
-    }
-
-    void closeRamCapture() {
-        if (ramReader != null) {
-            try { ramReader.close(); } catch (Exception ignored) {}
-            ramReader = null;
-        }
-        if (ramBuffer != null) {
-            ramBuffer.clear();
-            ramBuffer.release();
-            ramBuffer = null;
-        }
-        if (glView != null) glView.setRamBuffer(null);
-    }
-
     void startPreviewOnlySession(Runnable onReady) {
         if (cameraDevice == null || previewSurface == null) { if (onReady != null) onReady.run(); return; }
         try {
@@ -2865,8 +1984,6 @@ public class MainActivity extends Activity {
     }
 
     void ensurePersistentEncoderSurface() {
-        closeTape3();
-
         if (encoderSurface != null) {
             return;
         }
@@ -3194,7 +2311,6 @@ public class MainActivity extends Activity {
     }
 
     void releasePersistentRecordingPipeline() {
-        closeRamCapture();
         recordingSessionConfigured = false;
         recordingSessionCreating = false;
         busyRecording = false;
@@ -3218,8 +2334,6 @@ public class MainActivity extends Activity {
             }
             session = null;
         }
-
-        closeTape3();
 
         if (encoderSurface != null) {
             try {
@@ -3747,15 +2861,8 @@ public class MainActivity extends Activity {
                                 wantedSize
                         );
 
-                boolean ramSupported = glView == null ||
-                        (glView.getLensMode() != GLView.LensMode.SCRUB &&
-                         glView.getLensMode() != GLView.LensMode.REWIND &&
-                         glView.getLensMode() != GLView.LensMode.RAMREV &&
-                         glView.getLensMode() != GLView.LensMode.CREV) ||
-                        containsSize(map.getOutputSizes(ImageFormat.YUV_420_888), wantedSize);
-
                 if (previewSupported &&
-                        encoderSupported && ramSupported) {
+                        encoderSupported) {
                     TraceLog.i(
                             "Normal capture camera=" +
                                     id +
@@ -4022,7 +3129,7 @@ public class MainActivity extends Activity {
     int effectiveRecordDurationMs() {
         return glView != null && glView.getLensMode() == GLView.LensMode.REVERSE
                 ? reverseRecordMs
-                : Math.max(50, slowPlaybackMs / Math.max(1, slowFactor));
+                : Math.max(100, slowPlaybackMs / 10);
     }
 
     int effectivePlaybackDurationMs() {
@@ -4039,105 +3146,11 @@ public class MainActivity extends Activity {
         if (mode == GLView.LensMode.DUBBUF_REVERSE) {
             running = false; recordingFollowing = false; recordingCycleId = -1; loadingCycleId = -1;
             glView.stopFreeze(); glView.releaseAllPlayers(); glView.setLensMode(mode);
-            captureFps = 60; captureWidth = 1280; captureHeight = 720; playbackFps = 30;
-            activeTestPreset = "DUBBUF_REVERSE_60_30_TAPE";
+            captureFps = 60; captureWidth = 1280; captureHeight = 720; playbackFps = 48;
+            activeTestPreset = "DUBBUF_REVERSE_60_48";
             updateControlButtons(); updateOverlay("Reverse; restarting");
             if (splashPanel != null) splashPanel.setVisibility(View.GONE);
             scheduleCameraRecovery("DubBuf mode restart");
-            return;
-        }
-
-        if (mode == GLView.LensMode.RAMREV ||
-                mode == GLView.LensMode.CREV) {
-            running = false;
-            recordingFollowing = false;
-            pendingRecordingCycleId = -1;
-            loadingCycleId = -1;
-
-            mainHandler.removeCallbacks(ramRevTick);
-            ramRevCycleStartMs = 0L;
-
-            glView.stopFreeze();
-            glView.stopDubBufReverse();
-            glView.stopStutter();
-            glView.stopFast();
-            glView.releaseAllPlayers();
-            glView.setLensMode(mode);
-
-            captureFps = 60;
-            captureWidth = 1920;
-            captureHeight = 1080;
-            playbackFps = 60;
-            activeTestPreset = mode == GLView.LensMode.CREV
-                    ? "CREV_1080P60" : "RAMREV_1080P60";
-
-            updateControlButtons();
-            updateScrubUi();
-            updateOverlay("RAMRev 1080p60; restarting");
-
-            if (splashPanel != null) splashPanel.setVisibility(View.GONE);
-            scheduleCameraRecovery("RAMRev mode restart");
-            return;
-        }
-
-        if (mode == GLView.LensMode.REWIND) {
-            running = false;
-            recordingFollowing = false;
-            pendingRecordingCycleId = -1;
-            loadingCycleId = -1;
-
-            rewindHolding = false;
-            rewindCatchup = false;
-            rewindAtLimit = false;
-            rewindDelayMs = 0.0;
-            rewindLastTickMs = 0L;
-            mainHandler.removeCallbacks(rewindTick);
-
-            glView.stopFreeze();
-            glView.stopDubBufReverse();
-            glView.stopStutter();
-            glView.stopFast();
-            glView.releaseAllPlayers();
-            glView.setLensMode(mode);
-
-            captureFps = 60;
-            captureWidth = 1920;
-            captureHeight = 1080;
-            playbackFps = 60;
-            activeTestPreset = "RAM_REWIND_1080P60_1X_3X";
-
-            updateControlButtons();
-            updateScrubUi();
-            updateOverlay("Rewind RAM 1080p60; restarting");
-
-            if (splashPanel != null) splashPanel.setVisibility(View.GONE);
-            scheduleCameraRecovery("Rewind RAM mode restart");
-            return;
-        }
-
-        if (mode == GLView.LensMode.SCRUB) {
-            running = false;
-            recordingFollowing = false;
-            pendingRecordingCycleId = -1;
-            loadingCycleId = -1;
-            glView.stopFreeze();
-            glView.stopDubBufReverse();
-            glView.stopStutter();
-            glView.stopFast();
-            glView.releaseAllPlayers();
-            glView.setLensMode(mode);
-            captureFps = 60;
-            captureWidth = 1920;
-            captureHeight = 1080;
-            playbackFps = 60;
-            activeTestPreset = "RAM_SCRUB_1080P60";
-            ramSelectedOffsetMs = 0L;
-            if (scrubSeek != null) scrubSeek.setProgress(1000);
-            updateControlButtons();
-            updateScrubUi();
-            updateOverlay("Scrub RAM 1080p60; restarting");
-            if (splashPanel != null) splashPanel.setVisibility(View.GONE);
-            scheduleCameraRecovery("Scrub RAM mode restart");
             return;
         }
 
@@ -4175,13 +3188,9 @@ public class MainActivity extends Activity {
             captureWidth = 1280;
             captureHeight = 720;
             playbackFps = 60;
-            stutterTimeMs = 1000;
-            stutterSlices = 4;
-            glView.setStutterTimeMs(stutterTimeMs);
-            glView.setStutterSlices(stutterSlices);
-            activeTestPreset = "STUTTER_SLICE_720P60_1000MS_X4";
+            activeTestPreset = "STUTTER_HISTORY_720P60_200MS_X4";
             updateControlButtons();
-            updateOverlay("Stutter 1.0 s × 4; restarting");
+            updateOverlay("Stutter 0.2 s × 4; restarting");
             if (splashPanel != null) splashPanel.setVisibility(View.GONE);
             scheduleCameraRecovery("Stutter mode restart");
             return;
@@ -4217,11 +3226,11 @@ public class MainActivity extends Activity {
                 : REVERSE_CAPTURE_FPS;
 
         if (mode == GLView.LensMode.SLOW) {
-            playbackFps = Math.max(1, Math.round((float) SLOW_CAPTURE_FPS / slowFactor));
+            playbackFps = SLOW_PLAYBACK_FPS;
             captureWidth = 1920;
             captureHeight = 1080;
-            recordCueMs = 0;
-            activeTestPreset = "SLOW_1080P240_TAPE";
+            recordCueMs = Math.max(0, slowPlaybackMs - Math.max(100, slowPlaybackMs / 10) - SLOW_DECODE_MARGIN_MS);
+            activeTestPreset = "SLOW_1080P240_DELAYED";
         } else {
             playbackFps = 48;
             captureWidth = 1280;
@@ -4269,25 +3278,12 @@ public class MainActivity extends Activity {
         updateControlButtons();
     }
 
-    void setSlowFactor(int factor) {
-        slowFactor = Math.max(2, Math.min(16, factor));
-        playbackFps = Math.max(1, Math.round((float) SLOW_CAPTURE_FPS / slowFactor));
-        captureDurationMs = Math.max(50, slowPlaybackMs / slowFactor);
-        recordCueMs = 0;
-        if (glView != null && glView.getLensMode() == GLView.LensMode.SLOW) {
-            updateControlButtons();
-            restartForCaptureOptions("Slow " + slowFactor + "×");
-        } else {
-            updateControlButtons();
-        }
-    }
-
     void setFastSpeed(float speed) {
         fastSpeed = Math.max(1.0f, Math.min(4.0f, speed));
         if (fastSpeed > 1.0f &&
-                fastSpeed * fastTimeMs > 2000.0f)
+                (fastSpeed - 1.0f) * fastTimeMs > 2000.0f)
             fastTimeMs = Math.max(100,
-                    Math.round(2000.0f / fastSpeed));
+                    Math.round(2000.0f / (fastSpeed - 1.0f)));
         if (glView != null) {
             glView.setFastTimeMs(fastTimeMs);
             glView.setFastSpeed(fastSpeed);
@@ -4300,25 +3296,25 @@ public class MainActivity extends Activity {
         if (glView == null) return;
         GLView.LensMode mode = glView.getLensMode();
         if (mode == GLView.LensMode.SLOW) {
-            slowPlaybackMs = Math.max(500, Math.min(4000, durationMs));
-            captureDurationMs = Math.max(50, slowPlaybackMs / Math.max(1, slowFactor));
-            recordCueMs = 0;
-            activeTestPreset = "SLOW_" + slowPlaybackMs + "MS_X" + slowFactor;
+            slowPlaybackMs = Math.max(1000, Math.min(4000, durationMs));
+            captureDurationMs = Math.max(100, slowPlaybackMs / 10);
+            recordCueMs = Math.max(0, slowPlaybackMs - captureDurationMs - SLOW_DECODE_MARGIN_MS);
+            activeTestPreset = "SLOW_" + slowPlaybackMs + "MS";
             updateOverlay("Slow Time " + (slowPlaybackMs / 1000.0f) + " s");
         } else if (mode == GLView.LensMode.DUBBUF_REVERSE) {
             reversePlaybackMs = Math.max(500, Math.min(4000, durationMs));
             glView.startDubBufReverse(reversePlaybackMs, null);
             updateOverlay("Reverse Time " + (reversePlaybackMs / 1000.0f) + " s");
         } else if (mode == GLView.LensMode.STUTTER) {
-            int t = Math.max(200, Math.min(2000, durationMs));
-            stutterTimeMs = t;
+            int t = Math.max(500, Math.min(2000, durationMs));
+            reversePlaybackMs = t;
             glView.setStutterTimeMs(t);
-            updateOverlay("Stutter slice " + (t / 1000.0f) + " s");
+            updateOverlay("Stutter Time " + (t / 1000.0f) + " s");
         } else if (mode == GLView.LensMode.FAST) {
             fastTimeMs = Math.max(100, Math.min(2000, durationMs));
             if (fastSpeed > 1.0f &&
-                    fastSpeed * fastTimeMs > 2000.0f)
-                fastSpeed = 2000.0f / fastTimeMs;
+                    (fastSpeed - 1.0f) * fastTimeMs > 2000.0f)
+                fastSpeed = 1.0f + 2000.0f / fastTimeMs;
             glView.setFastTimeMs(fastTimeMs);
             glView.setFastSpeed(fastSpeed);
             updateOverlay("Fast Time " + (fastTimeMs / 1000.0f) + " s");
@@ -4443,11 +3439,6 @@ public class MainActivity extends Activity {
         if (glView.getLensMode() == GLView.LensMode.FREEZE) return "Freeze";
         if (glView.getLensMode() == GLView.LensMode.STUTTER) return "Stutter";
         if (glView.getLensMode() == GLView.LensMode.FAST) return "Fast";
-        if (glView.getLensMode() == GLView.LensMode.SCRUB) return "Scrub";
-        if (glView.getLensMode() == GLView.LensMode.REWIND) return "Rewind";
-        if (glView.getLensMode() == GLView.LensMode.RAMREV) return "RAMRev";
-        if (glView.getLensMode() == GLView.LensMode.CREV) return "CRev";
-        if (glView.getLensMode() == GLView.LensMode.TAPE3) return "Live";
         return "Reverse";
     }
 
@@ -4726,82 +3717,6 @@ public class MainActivity extends Activity {
         runOnUiThread(() -> {
             if (overlay == null) return;
 
-            if (glView != null &&
-                    glView.getLensMode() == GLView.LensMode.TAPE3) {
-                Tape3 t = tape3;
-                double sensorFps = tape3SensorFrameMs > 0.0
-                        ? 1000.0 / tape3SensorFrameMs : 0.0;
-
-                String aeText;
-                switch (tape3AeState) {
-                    case CaptureResult.CONTROL_AE_STATE_INACTIVE:
-                        aeText = "INACTIVE"; break;
-                    case CaptureResult.CONTROL_AE_STATE_SEARCHING:
-                        aeText = "SEARCHING"; break;
-                    case CaptureResult.CONTROL_AE_STATE_CONVERGED:
-                        aeText = "CONVERGED"; break;
-                    case CaptureResult.CONTROL_AE_STATE_LOCKED:
-                        aeText = "LOCKED"; break;
-                    case CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED:
-                        aeText = "FLASH"; break;
-                    case CaptureResult.CONTROL_AE_STATE_PRECAPTURE:
-                        aeText = "PRECAPTURE"; break;
-                    default:
-                        aeText = "--";
-                }
-
-                if (t == null) {
-                    overlay.setText("TAPE3\nStarting...");
-                } else {
-                    overlay.setText(String.format(Locale.US,
-                            "TAPE3  1920x1080\n" +
-                            "HS AE %s\n\n" +
-                            "SENSOR\n" +
-                            "Frame     %.2f ms   %.1f fps\n" +
-                            "Exposure  %.2f ms\n" +
-                            "ISO       %d\n" +
-                            "AE        %s\n\n" +
-                            "CAMERA\n" +
-                            "Callbacks %.1f /s\n\n" +
-                            "CODEC\n" +
-                            "Frames    %d\n" +
-                            "Rate      %.1f fps\n" +
-                            "All-I     %.1f%%\n" +
-                            "Average   %.1f KB\n" +
-                            "Peak      %.1f KB\n\n" +
-                            "IMU\n" +
-                            "Accel     %+.2f  %+.2f  %+.2f m/s²\n" +
-                            "Gyro      %+.3f  %+.3f  %+.3f rad/s\n\n" +
-                            "TAPE\n" +
-                            "RAM       %.1f / 128 MiB\n" +
-                            "Write     %.2f MB/s\n" +
-                            "History   %.1f s",
-                            tape3RequestedAe,
-                            tape3SensorFrameMs,
-                            sensorFps,
-                            tape3ExposureMs,
-                            tape3Iso,
-                            aeText,
-                            tape3CallbackFps,
-                            t.getTotalFrames(),
-                            t.getEncodedFps(),
-                            t.getKeyPercent(),
-                            t.getAverageFrameBytes() / 1024.0,
-                            t.getPeakFrameBytes() / 1024.0,
-                            imuAccelX,
-                            imuAccelY,
-                            imuAccelZ,
-                            imuGyroX,
-                            imuGyroY,
-                            imuGyroZ,
-                            t.getMegabytes(),
-                            t.getMegabytesPerSecond(),
-                            t.getEstimatedHistorySeconds()));
-                }
-                return;
-            }
-
-
             GLView.LensMode lensMode = glView == null
                     ? GLView.LensMode.DUBBUF_REVERSE
                     : glView.getLensMode();
@@ -4901,7 +3816,6 @@ public class MainActivity extends Activity {
     public void onWindowFocusChanged(
             boolean hasFocus
     ) {
-        TraceLog.i("DEEP LIFE windowFocus ENTER hasFocus=" + hasFocus);
         super.onWindowFocusChanged(
                 hasFocus
         );
@@ -4913,11 +3827,8 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onPause() {
-        TraceLog.i("DEEP LIFE onPause ENTER");
         super.onPause();
         appPaused = true;
-        stopImu();
-
         running = false;
         mainHandler.removeCallbacks(reopenCameraRunnable);
         cameraOpenGeneration++;
@@ -4934,13 +3845,10 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onResume() {
-        TraceLog.i("DEEP LIFE onResume ENTER");
         super.onResume();
         enterFullscreen();
         if (!appPaused) return;
         appPaused = false;
-        startImu();
-
         TraceLog.i("MainActivity onResume; reopening camera once");
         if (cameraTexture != null &&
                 checkSelfPermission(Manifest.permission.CAMERA) ==

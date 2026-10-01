@@ -15,13 +15,7 @@ import android.content.Context;
 import android.content.pm.PackageManager;
 import android.graphics.SurfaceTexture;
 import android.graphics.BitmapFactory;
-import android.hardware.Sensor;
-import android.hardware.SensorEvent;
-import android.hardware.SensorEventListener;
-import android.hardware.SensorManager;
-
 import android.hardware.camera2.*;
-import android.hardware.camera2.CameraConstrainedHighSpeedCaptureSession;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.MediaCodec;
 import android.media.MediaExtractor;
@@ -188,7 +182,6 @@ public class MainActivity extends Activity {
     Surface previewSurface;
 
     RamFrameBuffer ramBuffer;
-    Tape3 tape3;
     ImageReader ramReader;
     boolean ramScrubbing = false;
     long ramSelectedOffsetMs = 0L;
@@ -204,79 +197,6 @@ public class MainActivity extends Activity {
 
     MediaSurfaceRecorder recorder;
 
-    SensorManager imuSensorManager;
-    Sensor imuAccelerometer;
-    Sensor imuGyroscope;
-
-    volatile float imuAccelX = 0.0f;
-    volatile float imuAccelY = 0.0f;
-    volatile float imuAccelZ = 0.0f;
-    volatile float imuGyroX = 0.0f;
-    volatile float imuGyroY = 0.0f;
-    volatile float imuGyroZ = 0.0f;
-
-    final SensorEventListener imuListener = new SensorEventListener() {
-        @Override
-        public void onSensorChanged(SensorEvent event) {
-            if (event.sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
-                imuAccelX = event.values[0];
-                imuAccelY = event.values[1];
-                imuAccelZ = event.values[2];
-            } else if (event.sensor.getType() == Sensor.TYPE_GYROSCOPE) {
-                imuGyroX = event.values[0];
-                imuGyroY = event.values[1];
-                imuGyroZ = event.values[2];
-            }
-        }
-
-        @Override
-        public void onAccuracyChanged(Sensor sensor, int accuracy) {
-        }
-    };
-
-    void startImu() {
-        if (imuSensorManager == null) {
-            imuSensorManager =
-                    (SensorManager) getSystemService(Context.SENSOR_SERVICE);
-            if (imuSensorManager != null) {
-                imuAccelerometer = imuSensorManager.getDefaultSensor(
-                        Sensor.TYPE_ACCELEROMETER);
-                imuGyroscope = imuSensorManager.getDefaultSensor(
-                        Sensor.TYPE_GYROSCOPE);
-            }
-        }
-
-        if (imuSensorManager == null) return;
-        imuSensorManager.unregisterListener(imuListener);
-
-        if (imuAccelerometer != null)
-            imuSensorManager.registerListener(
-                    imuListener, imuAccelerometer,
-                    SensorManager.SENSOR_DELAY_GAME);
-
-        if (imuGyroscope != null)
-            imuSensorManager.registerListener(
-                    imuListener, imuGyroscope,
-                    SensorManager.SENSOR_DELAY_GAME);
-    }
-
-    void stopImu() {
-        if (imuSensorManager != null)
-            imuSensorManager.unregisterListener(imuListener);
-    }
-
-    volatile double tape3SensorFrameMs = 0.0;
-    volatile double tape3ExposureMs = 0.0;
-    volatile int tape3Iso = 0;
-    volatile int tape3AeState = -1;
-    volatile double tape3CallbackFps = 0.0;
-    volatile String tape3RequestedAe = "--";
-
-    long tape3AuditFirstNs = 0L;
-    long tape3AuditLastLogNs = 0L;
-    long tape3AuditFrames = 0L;
-    long tape3AuditLastFrames = 0L;
-
     final CameraCaptureSession.CaptureCallback frameAuditCaptureCallback =
             new CameraCaptureSession.CaptureCallback() {
                 @Override
@@ -287,50 +207,6 @@ public class MainActivity extends Activity {
                 ) {
                     Long timestamp = result.get(CaptureResult.SENSOR_TIMESTAMP);
                     FrameAudit.cameraCapture(timestamp == null ? -1L : timestamp);
-
-                    if (glView != null && glView.getLensMode() == GLView.LensMode.TAPE3) {
-                        tape3AuditFrames++;
-                        Long tape3FrameDuration =
-                                result.get(CaptureResult.SENSOR_FRAME_DURATION);
-                        Long tape3Exposure =
-                                result.get(CaptureResult.SENSOR_EXPOSURE_TIME);
-                        Integer tape3Sensitivity =
-                                result.get(CaptureResult.SENSOR_SENSITIVITY);
-                        Integer tape3Ae =
-                                result.get(CaptureResult.CONTROL_AE_STATE);
-                        Range<Integer> tape3AeRequest =
-                                request.get(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE);
-
-                        tape3SensorFrameMs = tape3FrameDuration == null
-                                ? 0.0 : tape3FrameDuration / 1000000.0;
-                        tape3ExposureMs = tape3Exposure == null
-                                ? 0.0 : tape3Exposure / 1000000.0;
-                        tape3Iso = tape3Sensitivity == null ? 0 : tape3Sensitivity;
-                        tape3AeState = tape3Ae == null ? -1 : tape3Ae;
-                        tape3RequestedAe = tape3AeRequest == null
-                                ? "--" : tape3AeRequest.toString();
-
-                        long nowNs = System.nanoTime();
-                        if (tape3AuditFirstNs == 0L) {
-                            tape3AuditFirstNs = nowNs;
-                            tape3AuditLastLogNs = nowNs;
-                            tape3AuditLastFrames = tape3AuditFrames;
-                        } else if (nowNs - tape3AuditLastLogNs >= 5000000000L) {
-                            long deltaFrames = tape3AuditFrames - tape3AuditLastFrames;
-                            double seconds = (nowNs - tape3AuditLastLogNs) / 1000000000.0;
-                            tape3CallbackFps = seconds > 0.0
-                                    ? deltaFrames / seconds : 0.0;
-
-                            Long frameDuration = result.get(CaptureResult.SENSOR_FRAME_DURATION);
-                            Range<Integer> aeRange = request.get(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE);
-                            TraceLog.i("TAPE3 CAMERA frames=" + tape3AuditFrames +
-                                    " fps=" + (deltaFrames / seconds) +
-                                    " frameDurationMs=" + (frameDuration == null ? -1.0 : frameDuration / 1000000.0) +
-                                    " requestedAE=" + aeRange);
-                            tape3AuditLastLogNs = nowNs;
-                            tape3AuditLastFrames = tape3AuditFrames;
-                        }
-                    }
                 }
             };
 
@@ -627,8 +503,8 @@ public class MainActivity extends Activity {
         captureWidth = 1920;
         captureHeight = 1080;
         playbackFps = 60;
-        activeTestPreset = "TAPE3_1080P60";
-        glView.setLensMode(GLView.LensMode.TAPE3);
+        activeTestPreset = "CREV_1080P60";
+        glView.setLensMode(GLView.LensMode.CREV);
 
         root.addView(
                 glView,
@@ -649,9 +525,6 @@ public class MainActivity extends Activity {
         buildSplash(root);
 
         setContentView(root);
-
-        startImu();
-
 
         glView.setOnTouchListener((v, event) -> {
             if (glView.getLensMode() != GLView.LensMode.REWIND) {
@@ -1202,9 +1075,8 @@ public class MainActivity extends Activity {
 
     void showModeChoices(View anchor) {
         showChoicePopup(anchor,
-                new String[]{"TAPE3", "CREV", "RAMREV", "REVERSE", "SLOW", "FAST", "FREEZE", "STUTTER", "SCRUB", "REWIND"},
+                new String[]{"CREV", "RAMREV", "REVERSE", "SLOW", "FAST", "FREEZE", "STUTTER", "SCRUB", "REWIND"},
                 new Runnable[]{
-                        () -> setLensMode(GLView.LensMode.TAPE3),
                         () -> setLensMode(GLView.LensMode.CREV),
                         () -> setLensMode(GLView.LensMode.RAMREV),
                         () -> setLensMode(GLView.LensMode.DUBBUF_REVERSE),
@@ -1216,7 +1088,7 @@ public class MainActivity extends Activity {
                         () -> setLensMode(GLView.LensMode.REWIND)
                 },
                 new int[]{
-                        MODE_CREV, MODE_CREV, MODE_RAMREV, MODE_REVERSE, MODE_SLOW, MODE_FAST,
+                        MODE_CREV, MODE_RAMREV, MODE_REVERSE, MODE_SLOW, MODE_FAST,
                         MODE_FREEZE, MODE_STUTTER, MODE_SCRUB, MODE_REWIND
                 });
     }
@@ -1294,7 +1166,6 @@ public class MainActivity extends Activity {
         showChoicePopup(anchor,
                 new String[]{"B/W", "Pop", "Mirror"},
                 new Runnable[]{stub, stub, stub});
-                        
     }
 
     int modeColor() {
@@ -1794,41 +1665,18 @@ public class MainActivity extends Activity {
         }
 
         running = true;
-
-        if (glView.getLensMode() == GLView.LensMode.TAPE3) {
-            updateOverlay("Starting Tape3 1080p60 All-I");
-            startTape3Session(() -> {
-                TraceLog.i("TAPE3 active 1080p60 All-I");
-                mainHandler.postDelayed(() -> {
-                    if (tape3 != null &&
-                            glView.getLensMode() == GLView.LensMode.TAPE3) {
-                        glView.showTape3Delay();
-                        TraceLog.i("TAPE3 DELAY display selected 1.000s");
-                    }
-                }, 1500L);
-                hideSplashAfterFirstFrame();
-            });
-            return;
-        }
         if (glView.getLensMode() == GLView.LensMode.RAMREV ||
                 glView.getLensMode() == GLView.LensMode.CREV) {
             updateOverlay(glView.getLensMode() == GLView.LensMode.CREV
                     ? "Starting CRev 1080p60" : "Starting RAMRev 1080p60");
-            TraceLog.i("DBG CRev 01 before startRamPreviewSession");
             startRamPreviewSession(() -> {
-                TraceLog.i("DBG CRev 20 onReady entered");
-                TraceLog.i("DBG CRev 21 before setRamBuffer");
                 glView.setRamBuffer(ramBuffer);
-                TraceLog.i("DBG CRev 22 before showRamLive");
                 glView.showRamLive();
-                TraceLog.i("DBG CRev 23 before startRamRev");
                 startRamRev();
-                TraceLog.i("DBG CRev 24 onReady complete");
 
                 TraceLog.i("RAMRev active 1080p60 reverse 1x");
                 hideSplashAfterFirstFrame();
             });
-            TraceLog.i("DBG CRev 02 startRamPreviewSession returned");
             return;
         }
 
@@ -2494,131 +2342,17 @@ public class MainActivity extends Activity {
 
 
 
-    void startTape3Session(Runnable onReady) {
-        if (cameraDevice == null || previewSurface == null) {
-            if (onReady != null) onReady.run();
-            return;
-        }
-
-        try {
-            // First prove Samsungs constrained high-speed path at 1080p120.
-            // Once proven, Tape3 can decide how best to produce its 60 fps tape.
-            final int tape3CameraFps = 120;
-            final Tape3 newTape3 =
-                    new Tape3(1920, 1080, tape3CameraFps, 40000000, glView.getDecoderSurface(0));
-            newTape3.prepare();
-            tape3 = newTape3;
-
-            tape3AuditFirstNs = 0L;
-            tape3AuditLastLogNs = 0L;
-            tape3AuditFrames = 0L;
-            tape3AuditLastFrames = 0L;
-
-            if (session != null) {
-                try { session.close(); } catch (Exception ignored) {}
-                session = null;
-            }
-
-            ArrayList<Surface> surfaces = new ArrayList<>();
-            surfaces.add(previewSurface);
-            surfaces.add(newTape3.getInputSurface());
-
-            TraceLog.i("TAPE3 HS requesting constrained 1920x1080@120 preview+AVC");
-
-            cameraDevice.createConstrainedHighSpeedCaptureSession(
-                    surfaces,
-                    new CameraCaptureSession.StateCallback() {
-                        @Override public void onConfigured(CameraCaptureSession s) {
-                            try {
-                                if (tape3 != newTape3 ||
-                                        glView.getLensMode() != GLView.LensMode.TAPE3) {
-                                    try { s.close(); } catch (Exception ignored) {}
-                                    newTape3.stopAndRelease();
-                                    return;
-                                }
-
-                                CameraConstrainedHighSpeedCaptureSession hs =
-                                        (CameraConstrainedHighSpeedCaptureSession) s;
-                                session = s;
-                                recordingSessionConfigured = false;
-
-                                CaptureRequest.Builder b =
-                                        cameraDevice.createCaptureRequest(
-                                                CameraDevice.TEMPLATE_RECORD);
-                                b.addTarget(previewSurface);
-                                b.addTarget(newTape3.getInputSurface());
-                                b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
-                                        new Range<Integer>(30, 120));
-                                b.set(CaptureRequest.CONTROL_MODE,
-                                        CaptureRequest.CONTROL_MODE_AUTO);
-                                b.set(CaptureRequest.CONTROL_AE_MODE,
-                                        CaptureRequest.CONTROL_AE_MODE_ON);
-                                applyCameraZoom(b, cameraZoom);
-
-                                List<CaptureRequest> burst =
-                                        hs.createHighSpeedRequestList(b.build());
-
-                                newTape3.start();
-                                hs.setRepeatingBurst(
-                                        burst,
-                                        frameAuditCaptureCallback,
-                                        cameraHandler);
-
-                                TraceLog.i(
-                                        "TAPE3 HS active 1920x1080@120 burstRequests=" +
-                                        burst.size() + " targets=preview+AVC");
-                                if (onReady != null) mainHandler.post(onReady);
-                            } catch (Exception e) {
-                                TraceLog.e("TAPE3 HS session configure error", e);
-                            }
-                        }
-
-                        @Override public void onConfigureFailed(CameraCaptureSession s) {
-                            TraceLog.i("TAPE3 HS camera session failed");
-                            updateOverlay(
-                                    "Tape3 1080p120 high-speed stream combination failed");
-                            if (tape3 == newTape3) tape3 = null;
-                            newTape3.stopAndRelease();
-                        }
-                    },
-                    cameraHandler
-            );
-        } catch (Exception e) {
-            TraceLog.e("startTape3Session HS failed", e);
-            updateOverlay("Tape3 high-speed start failed: " + e);
-            if (tape3 != null) {
-                tape3.stopAndRelease();
-                tape3 = null;
-            }
-        }
-    }
-
-    void closeTape3() {
-        Tape3 oldTape3 = tape3;
-        tape3 = null;
-        if (oldTape3 != null) {
-            try { oldTape3.stopAndRelease(); } catch (Exception ignored) {}
-        }
-    }
-
     void startRamPreviewSession(Runnable onReady) {
-        TraceLog.i("DBG RAM 01 enter startRamPreviewSession");
         if (cameraDevice == null || previewSurface == null) {
             if (onReady != null) onReady.run();
             return;
         }
 
-        TraceLog.i("DBG RAM 03 before closeRamCapture");
         closeRamCapture();
-        TraceLog.i("DBG RAM 04 after closeRamCapture");
 
         try {
-            TraceLog.i("DBG RAM 05 before new RamFrameBuffer");
             ramBuffer = new RamFrameBuffer();
-            TraceLog.i("DBG RAM 06 after new RamFrameBuffer");
-            TraceLog.i("DBG RAM 07 before ImageReader.newInstance");
             ramReader = ImageReader.newInstance(1920, 1080, ImageFormat.YUV_420_888, 4);
-            TraceLog.i("DBG RAM 08 after ImageReader.newInstance");
 
             ramReader.setOnImageAvailableListener(reader -> {
                 Image image = null;
@@ -2636,33 +2370,26 @@ public class MainActivity extends Activity {
                 if (copyNs >= 10_000_000L)
                     TraceLog.i("RAM copy slow ms=" + (copyNs / 1_000_000.0));
             }, cameraHandler);
-            TraceLog.i("DBG RAM 09 listener installed");
 
             if (session != null) {
-                TraceLog.i("DBG RAM 10 closing old session");
                 try { session.close(); } catch (Exception ignored) {}
                 session = null;
             }
 
-            TraceLog.i("DBG RAM 11 building surface list");
             ArrayList<Surface> surfaces = new ArrayList<>();
             surfaces.add(previewSurface);
             surfaces.add(ramReader.getSurface());
 
-            TraceLog.i("DBG RAM 12 before createCaptureSession");
             cameraDevice.createCaptureSession(
                     surfaces,
                     new CameraCaptureSession.StateCallback() {
                         @Override public void onConfigured(CameraCaptureSession s) {
-                            TraceLog.i("DBG RAM 13 onConfigured entered");
                             try {
                                 session = s;
                                 recordingSessionConfigured = false;
 
-                                TraceLog.i("DBG RAM 14 before createCaptureRequest");
                                 CaptureRequest.Builder b =
                                         cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
-                                TraceLog.i("DBG RAM 15 request builder created");
                                 b.addTarget(previewSurface);
                                 b.addTarget(ramReader.getSurface());
                                 b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
@@ -2671,10 +2398,8 @@ public class MainActivity extends Activity {
                                 b.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
                                 applyCameraZoom(b, cameraZoom);
 
-                                TraceLog.i("DBG RAM 16 before setRepeatingRequest");
                                 s.setRepeatingRequest(
                                         b.build(), frameAuditCaptureCallback, cameraHandler);
-                                TraceLog.i("DBG RAM 17 repeating request active");
                                 TraceLog.i("RAM preview session active 1920x1080@60 targets=preview+YUV");
                                 if (onReady != null) mainHandler.post(onReady);
                             } catch (Exception e) {
@@ -2689,7 +2414,6 @@ public class MainActivity extends Activity {
                     },
                     cameraHandler
             );
-            TraceLog.i("DBG RAM 18 createCaptureSession returned");
         } catch (Exception e) {
             TraceLog.e("startRamPreviewSession failed", e);
             updateOverlay("RAM Scrub start failed: " + e);
@@ -2865,8 +2589,6 @@ public class MainActivity extends Activity {
     }
 
     void ensurePersistentEncoderSurface() {
-        closeTape3();
-
         if (encoderSurface != null) {
             return;
         }
@@ -3218,8 +2940,6 @@ public class MainActivity extends Activity {
             }
             session = null;
         }
-
-        closeTape3();
 
         if (encoderSurface != null) {
             try {
@@ -4447,7 +4167,6 @@ public class MainActivity extends Activity {
         if (glView.getLensMode() == GLView.LensMode.REWIND) return "Rewind";
         if (glView.getLensMode() == GLView.LensMode.RAMREV) return "RAMRev";
         if (glView.getLensMode() == GLView.LensMode.CREV) return "CRev";
-        if (glView.getLensMode() == GLView.LensMode.TAPE3) return "Live";
         return "Reverse";
     }
 
@@ -4726,82 +4445,6 @@ public class MainActivity extends Activity {
         runOnUiThread(() -> {
             if (overlay == null) return;
 
-            if (glView != null &&
-                    glView.getLensMode() == GLView.LensMode.TAPE3) {
-                Tape3 t = tape3;
-                double sensorFps = tape3SensorFrameMs > 0.0
-                        ? 1000.0 / tape3SensorFrameMs : 0.0;
-
-                String aeText;
-                switch (tape3AeState) {
-                    case CaptureResult.CONTROL_AE_STATE_INACTIVE:
-                        aeText = "INACTIVE"; break;
-                    case CaptureResult.CONTROL_AE_STATE_SEARCHING:
-                        aeText = "SEARCHING"; break;
-                    case CaptureResult.CONTROL_AE_STATE_CONVERGED:
-                        aeText = "CONVERGED"; break;
-                    case CaptureResult.CONTROL_AE_STATE_LOCKED:
-                        aeText = "LOCKED"; break;
-                    case CaptureResult.CONTROL_AE_STATE_FLASH_REQUIRED:
-                        aeText = "FLASH"; break;
-                    case CaptureResult.CONTROL_AE_STATE_PRECAPTURE:
-                        aeText = "PRECAPTURE"; break;
-                    default:
-                        aeText = "--";
-                }
-
-                if (t == null) {
-                    overlay.setText("TAPE3\nStarting...");
-                } else {
-                    overlay.setText(String.format(Locale.US,
-                            "TAPE3  1920x1080\n" +
-                            "HS AE %s\n\n" +
-                            "SENSOR\n" +
-                            "Frame     %.2f ms   %.1f fps\n" +
-                            "Exposure  %.2f ms\n" +
-                            "ISO       %d\n" +
-                            "AE        %s\n\n" +
-                            "CAMERA\n" +
-                            "Callbacks %.1f /s\n\n" +
-                            "CODEC\n" +
-                            "Frames    %d\n" +
-                            "Rate      %.1f fps\n" +
-                            "All-I     %.1f%%\n" +
-                            "Average   %.1f KB\n" +
-                            "Peak      %.1f KB\n\n" +
-                            "IMU\n" +
-                            "Accel     %+.2f  %+.2f  %+.2f m/s²\n" +
-                            "Gyro      %+.3f  %+.3f  %+.3f rad/s\n\n" +
-                            "TAPE\n" +
-                            "RAM       %.1f / 128 MiB\n" +
-                            "Write     %.2f MB/s\n" +
-                            "History   %.1f s",
-                            tape3RequestedAe,
-                            tape3SensorFrameMs,
-                            sensorFps,
-                            tape3ExposureMs,
-                            tape3Iso,
-                            aeText,
-                            tape3CallbackFps,
-                            t.getTotalFrames(),
-                            t.getEncodedFps(),
-                            t.getKeyPercent(),
-                            t.getAverageFrameBytes() / 1024.0,
-                            t.getPeakFrameBytes() / 1024.0,
-                            imuAccelX,
-                            imuAccelY,
-                            imuAccelZ,
-                            imuGyroX,
-                            imuGyroY,
-                            imuGyroZ,
-                            t.getMegabytes(),
-                            t.getMegabytesPerSecond(),
-                            t.getEstimatedHistorySeconds()));
-                }
-                return;
-            }
-
-
             GLView.LensMode lensMode = glView == null
                     ? GLView.LensMode.DUBBUF_REVERSE
                     : glView.getLensMode();
@@ -4901,7 +4544,6 @@ public class MainActivity extends Activity {
     public void onWindowFocusChanged(
             boolean hasFocus
     ) {
-        TraceLog.i("DEEP LIFE windowFocus ENTER hasFocus=" + hasFocus);
         super.onWindowFocusChanged(
                 hasFocus
         );
@@ -4913,11 +4555,8 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onPause() {
-        TraceLog.i("DEEP LIFE onPause ENTER");
         super.onPause();
         appPaused = true;
-        stopImu();
-
         running = false;
         mainHandler.removeCallbacks(reopenCameraRunnable);
         cameraOpenGeneration++;
@@ -4934,13 +4573,10 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onResume() {
-        TraceLog.i("DEEP LIFE onResume ENTER");
         super.onResume();
         enterFullscreen();
         if (!appPaused) return;
         appPaused = false;
-        startImu();
-
         TraceLog.i("MainActivity onResume; reopening camera once");
         if (cameraTexture != null &&
                 checkSelfPermission(Manifest.permission.CAMERA) ==

@@ -1,0 +1,112 @@
+diff --git a/app/src/main/java/com/jth/smm/MainActivity.java b/app/src/main/java/com/jth/smm/MainActivity.java
+index ab7dcce..d34dc88 100644
+--- a/app/src/main/java/com/jth/smm/MainActivity.java
++++ b/app/src/main/java/com/jth/smm/MainActivity.java
+@@ -1168,7 +1168,7 @@ public class MainActivity extends Activity {
+         showChoicePopup(anchor,
+                 new String[]{"B/W", "Pop", "Mirror"},
+                 new Runnable[]{stub, stub, stub});
+-                        () -> setLensMode(GLView.LensMode.TAPE3),
++                        
+     }
+ 
+     int modeColor() {
+@@ -1672,14 +1672,21 @@ public class MainActivity extends Activity {
+                 glView.getLensMode() == GLView.LensMode.CREV) {
+             updateOverlay(glView.getLensMode() == GLView.LensMode.CREV
+                     ? "Starting CRev 1080p60" : "Starting RAMRev 1080p60");
++            TraceLog.i("DBG CRev 01 before startRamPreviewSession");
+             startRamPreviewSession(() -> {
++                TraceLog.i("DBG CRev 20 onReady entered");
++                TraceLog.i("DBG CRev 21 before setRamBuffer");
+                 glView.setRamBuffer(ramBuffer);
++                TraceLog.i("DBG CRev 22 before showRamLive");
+                 glView.showRamLive();
++                TraceLog.i("DBG CRev 23 before startRamRev");
+                 startRamRev();
++                TraceLog.i("DBG CRev 24 onReady complete");
+ 
+                 TraceLog.i("RAMRev active 1080p60 reverse 1x");
+                 hideSplashAfterFirstFrame();
+             });
++            TraceLog.i("DBG CRev 02 startRamPreviewSession returned");
+             return;
+         }
+ 
+@@ -2346,16 +2353,23 @@ public class MainActivity extends Activity {
+ 
+ 
+     void startRamPreviewSession(Runnable onReady) {
++        TraceLog.i("DBG RAM 01 enter startRamPreviewSession");
+         if (cameraDevice == null || previewSurface == null) {
+             if (onReady != null) onReady.run();
+             return;
+         }
+ 
++        TraceLog.i("DBG RAM 03 before closeRamCapture");
+         closeRamCapture();
++        TraceLog.i("DBG RAM 04 after closeRamCapture");
+ 
+         try {
++            TraceLog.i("DBG RAM 05 before new RamFrameBuffer");
+             ramBuffer = new RamFrameBuffer();
++            TraceLog.i("DBG RAM 06 after new RamFrameBuffer");
++            TraceLog.i("DBG RAM 07 before ImageReader.newInstance");
+             ramReader = ImageReader.newInstance(1920, 1080, ImageFormat.YUV_420_888, 4);
++            TraceLog.i("DBG RAM 08 after ImageReader.newInstance");
+ 
+             ramReader.setOnImageAvailableListener(reader -> {
+                 Image image = null;
+@@ -2373,26 +2387,33 @@ public class MainActivity extends Activity {
+                 if (copyNs >= 10_000_000L)
+                     TraceLog.i("RAM copy slow ms=" + (copyNs / 1_000_000.0));
+             }, cameraHandler);
++            TraceLog.i("DBG RAM 09 listener installed");
+ 
+             if (session != null) {
++                TraceLog.i("DBG RAM 10 closing old session");
+                 try { session.close(); } catch (Exception ignored) {}
+                 session = null;
+             }
+ 
++            TraceLog.i("DBG RAM 11 building surface list");
+             ArrayList<Surface> surfaces = new ArrayList<>();
+             surfaces.add(previewSurface);
+             surfaces.add(ramReader.getSurface());
+ 
++            TraceLog.i("DBG RAM 12 before createCaptureSession");
+             cameraDevice.createCaptureSession(
+                     surfaces,
+                     new CameraCaptureSession.StateCallback() {
+                         @Override public void onConfigured(CameraCaptureSession s) {
++                            TraceLog.i("DBG RAM 13 onConfigured entered");
+                             try {
+                                 session = s;
+                                 recordingSessionConfigured = false;
+ 
++                                TraceLog.i("DBG RAM 14 before createCaptureRequest");
+                                 CaptureRequest.Builder b =
+                                         cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
++                                TraceLog.i("DBG RAM 15 request builder created");
+                                 b.addTarget(previewSurface);
+                                 b.addTarget(ramReader.getSurface());
+                                 b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+@@ -2401,8 +2422,10 @@ public class MainActivity extends Activity {
+                                 b.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON);
+                                 applyCameraZoom(b, cameraZoom);
+ 
++                                TraceLog.i("DBG RAM 16 before setRepeatingRequest");
+                                 s.setRepeatingRequest(
+                                         b.build(), frameAuditCaptureCallback, cameraHandler);
++                                TraceLog.i("DBG RAM 17 repeating request active");
+                                 TraceLog.i("RAM preview session active 1920x1080@60 targets=preview+YUV");
+                                 if (onReady != null) mainHandler.post(onReady);
+                             } catch (Exception e) {
+@@ -2417,6 +2440,7 @@ public class MainActivity extends Activity {
+                     },
+                     cameraHandler
+             );
++            TraceLog.i("DBG RAM 18 createCaptureSession returned");
+         } catch (Exception e) {
+             TraceLog.e("startRamPreviewSession failed", e);
+             updateOverlay("RAM Scrub start failed: " + e);
