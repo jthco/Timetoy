@@ -1,0 +1,82 @@
+[1mdiff --git a/app/src/main/java/com/jth/smm/MainActivity.java b/app/src/main/java/com/jth/smm/MainActivity.java[m
+[1mindex 54b8b20..d3c7c0f 100644[m
+[1m--- a/app/src/main/java/com/jth/smm/MainActivity.java[m
+[1m+++ b/app/src/main/java/com/jth/smm/MainActivity.java[m
+[36m@@ -383,6 +383,8 @@[m [mpublic class MainActivity extends Activity {[m
+     volatile long measuredCaptureSpanUs = -1L;[m
+ [m
+     boolean hudVisible = false;[m
+[32m+[m[32m    boolean diagnosticVisible = true;[m
+[32m+[m
+ [m
+     PlaybackItem currentItem;[m
+     PlaybackItem nextItem;[m
+[36m@@ -654,6 +656,17 @@[m [mpublic class MainActivity extends Activity {[m
+ [m
+ [m
+         glView.setOnTouchListener((v, event) -> {[m
+[32m+[m[32m            if (glView.getLensMode() != GLView.LensMode.REWIND) {[m
+[32m+[m[32m                if (event.getActionMasked() == MotionEvent.ACTION_UP) {[m
+[32m+[m[32m                    diagnosticVisible = !diagnosticVisible;[m
+[32m+[m[32m                    if (diagnosticPanel != null)[m
+[32m+[m[32m                        diagnosticPanel.setVisibility([m
+[32m+[m[32m                            diagnosticVisible ? View.VISIBLE : View.GONE);[m
+[32m+[m[32m                    v.performClick();[m
+[32m+[m[32m                }[m
+[32m+[m[32m                return true;[m
+[32m+[m[32m            }[m
+[32m+[m
+             if (glView.getLensMode() != GLView.LensMode.REWIND) {[m
+                 return false;[m
+             }[m
+[36m@@ -1073,11 +1086,20 @@[m [mpublic class MainActivity extends Activity {[m
+ [m
+         scrubSeek = new SeekBar(this);[m
+         scrubSeek.setMax(1000);[m
+[31m-        scrubSeek.setProgress(1000);[m
+[32m+[m[32m        scrubSeek.setProgress(967);[m
+         scrubSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {[m
+             @Override public void onStartTrackingTouch(SeekBar seekBar) { ramScrubbing = true; }[m
+ [m
+             @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {[m
+[32m+[m[32m                if (fromUser && glView != null &&[m
+[32m+[m[32m                        glView.getLensMode() == GLView.LensMode.TAPE3) {[m
+[32m+[m[32m                    long delayMs = (1000L - progress) * 30L;[m
+[32m+[m[32m                    if (tape3 != null) tape3.setDelayMs(delayMs);[m
+[32m+[m[32m                    scrubPositionLabel.setText([m
+[32m+[m[32m                            String.format(Locale.US, "Delay %.2f s", delayMs / 1000.0));[m
+[32m+[m[32m                    return;[m
+[32m+[m[32m                }[m
+[32m+[m
+                 if (!fromUser || ramBuffer == null) return;[m
+                 double history = ramBuffer.getHistorySeconds();[m
+                 long offsetMs = -Math.round(history * 1000.0 * (1000 - progress) / 1000.0);[m
+[36m@@ -1108,9 +1130,18 @@[m [mpublic class MainActivity extends Activity {[m
+ [m
+     void updateScrubUi() {[m
+         if (scrubPanel == null) return;[m
+[31m-        boolean active = glView != null && glView.getLensMode() == GLView.LensMode.SCRUB;[m
+[32m+[m[32m        boolean active = glView != null && (glView.getLensMode() == GLView.LensMode.SCRUB || glView.getLensMode() == GLView.LensMode.TAPE3);[m
+         scrubPanel.setVisibility(active ? View.VISIBLE : View.GONE);[m
+         if (!active) return;[m
+[32m+[m[32m        if (glView.getLensMode() == GLView.LensMode.TAPE3) {[m
+[32m+[m[32m            scrubLeftLabel.setText("30 s");[m
+[32m+[m[32m            scrubRightLabel.setText("0 s");[m
+[32m+[m[32m            if (!ramScrubbing && tape3 != null)[m
+[32m+[m[32m                scrubPositionLabel.setText(String.format([m
+[32m+[m[32m                        Locale.US, "Delay %.2f s", tape3.getDelayMs() / 1000.0));[m
+[32m+[m[32m            return;[m
+[32m+[m[32m        }[m
+[32m+[m
+ [m
+         double history = ramBuffer == null ? 0.0 : ramBuffer.getHistorySeconds();[m
+         scrubLeftLabel.setText(String.format(Locale.US, "-%.1f s", history));[m
+[36m@@ -4132,7 +4163,7 @@[m [mpublic class MainActivity extends Activity {[m
+             playbackFps = 60;[m
+             activeTestPreset = "RAM_SCRUB_1080P60";[m
+             ramSelectedOffsetMs = 0L;[m
+[31m-            if (scrubSeek != null) scrubSeek.setProgress(1000);[m
+[32m+[m[32m            if (scrubSeek != null) scrubSeek.setProgress(967);[m
+             updateControlButtons();[m
+             updateScrubUi();[m
+             updateOverlay("Scrub RAM 1080p60; restarting");[m

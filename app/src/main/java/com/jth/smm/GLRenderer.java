@@ -226,6 +226,22 @@ public class GLRenderer implements GLSurfaceView.Renderer {
             decoderSurfaceTextures[slot].updateTexImage();
             TraceLog.i("DEEP GL updateTexImage END slot=" + slot);
             decoderSurfaceTextures[slot].getTransformMatrix(decoderSources[slot].matrix);
+            if (slot == 0 && view.getLensMode() == GLView.LensMode.TAPE3) {
+                decoderSurfaceTextures[slot].getTransformMatrix(rawCameraMatrix);
+                android.opengl.Matrix.setIdentityM(cameraCorrectionMatrix, 0);
+                android.opengl.Matrix.translateM(cameraCorrectionMatrix, 0, 0.5f, 0.5f, 0f);
+boolean portrait =
+        view.getResources().getConfiguration().orientation
+        == android.content.res.Configuration.ORIENTATION_PORTRAIT;
+android.opengl.Matrix.rotateM(
+        cameraCorrectionMatrix, 0,
+        portrait ? 90f : 0f,
+        0f, 0f, 1f
+);
+                android.opengl.Matrix.translateM(cameraCorrectionMatrix, 0, -0.5f, -0.5f, 0f);
+                android.opengl.Matrix.multiplyMM(decoderSources[slot].matrix, 0,
+                        rawCameraMatrix, 0, cameraCorrectionMatrix, 0);
+            }
             TraceLog.i("DEEP GL transform END slot=" + slot);
             decoderFrameCounts[slot]++;
             if (pendingCaptureFrame[slot] >= 0) {

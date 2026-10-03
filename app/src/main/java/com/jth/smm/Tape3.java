@@ -24,7 +24,15 @@ public final class Tape3 {
     private static final int ARENA_BYTES = ARENA_MIB * 1024 * 1024;
     private static final int MAX_FRAMES = 32768;
 
-    private static final long DELAY_US = 1_000_000L;
+    private volatile long requestedDelayUs = 1_000_000L;
+
+    public void setDelayMs(long ms) {
+        requestedDelayUs = Math.max(0L, Math.min(30000L, ms)) * 1000L;
+    }
+
+    public long getDelayMs() {
+        return requestedDelayUs / 1000L;
+    }
 
     private final int width;
     private final int height;
@@ -113,7 +121,7 @@ public final class Tape3 {
                 "@" + fps +
                 " bitrate=" + bitrate +
                 " arenaMiB=" + ARENA_MIB +
-                " delayUs=" + DELAY_US
+                " delayUs=" + requestedDelayUs
         );
     }
 
@@ -341,6 +349,16 @@ public final class Tape3 {
         }
 
 
+        /* Retire oldest frames whose bytes will be overwritten. */
+        while (indexCount > 0) {
+            int oldest = indexWrite - indexCount;
+            if (oldest < 0) oldest += MAX_FRAMES;
+            int a = offsets[oldest];
+            int b = a + lengths[oldest];
+            if (a >= byteWrite + size || b <= byteWrite) break;
+            indexCount--;
+        }
+
         src.position(srcOffset);
         src.limit(srcOffset + size);
 
@@ -516,10 +534,10 @@ public final class Tape3 {
 
         if (indexCount <= 0) return -1;
 
-        final long target =
-                currentPtsUs - DELAY_US;
+        int oldest = indexWrite - indexCount;
+        if (oldest < 0) oldest += MAX_FRAMES;
 
-        if (target < 0) return -1;
+        final long target = currentPtsUs - requestedDelayUs;
 
         int i =
                 indexWrite - 1;
@@ -539,7 +557,7 @@ public final class Tape3 {
             }
         }
 
-        return -1;
+        return oldest;
     }
 
 
@@ -551,6 +569,7 @@ public final class Tape3 {
         if (deepTrace) TraceLog.i("DEEP DELAY feed ENTER currentPts=" + currentPtsUs);
         final int tapeIndex =
                 findDelayIndex(currentPtsUs);
+
 
         if (tapeIndex < 0) return;
 
@@ -572,6 +591,12 @@ public final class Tape3 {
          * Don't submit the same stored frame repeatedly if camera
          * cadence and encoder callbacks momentarily differ.
          */
+        if (lastDecodedFrameNumber >= 0 &&
+                (frameNumber < lastDecodedFrameNumber ||
+                 frameNumber > lastDecodedFrameNumber + fps / 4)) {
+            decoder.flush();
+        }
+
         if (frameNumber == lastDecodedFrameNumber) {
             return;
         }
