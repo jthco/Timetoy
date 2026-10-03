@@ -96,6 +96,10 @@ public class MainActivity extends Activity {
     LinearLayout scrubPanel;
     TextView scrubLeftLabel, scrubRightLabel, scrubPositionLabel;
     SeekBar scrubSeek;
+    SeekBar lfoPeriodSeek, lfoAmountSeek;
+    TextView lfoPeriodLabel, lfoAmountLabel;
+    long lfoPeriodMs = 2000L, lfoAmountMs = 0L;
+
     Button slices2Button, slices4Button, slices6Button, slices8Button;
     Button fast1Button, fast15Button, fast2Button, fast3Button, fast4Button;
 
@@ -1091,7 +1095,7 @@ public class MainActivity extends Activity {
             @Override public void onStartTrackingTouch(SeekBar seekBar) { ramScrubbing = true; }
 
             @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                if (fromUser && glView != null &&
+                if (glView != null &&
                         glView.getLensMode() == GLView.LensMode.TAPE3) {
                     long delayMs = (1000L - progress) * 30L;
                     if (tape3 != null) tape3.setDelayMs(delayMs);
@@ -1119,7 +1123,74 @@ public class MainActivity extends Activity {
         });
 
         scrubPanel.addView(labels);
-        scrubPanel.addView(scrubSeek);
+        LinearLayout delayRow = new LinearLayout(this);
+        delayRow.setOrientation(LinearLayout.HORIZONTAL);
+        delayRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        Button minus = new Button(this);
+        minus.setText("−");
+        minus.setOnClickListener(v ->
+                scrubSeek.setProgress(Math.min(1000, scrubSeek.getProgress() + 10)));
+
+        Button plus = new Button(this);
+        plus.setText("+");
+        plus.setOnClickListener(v ->
+                scrubSeek.setProgress(Math.max(0, scrubSeek.getProgress() - 10)));
+
+        delayRow.addView(minus, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        delayRow.addView(scrubSeek, new LinearLayout.LayoutParams(0, -2, 1f));
+        delayRow.addView(plus, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        scrubPanel.addView(delayRow);
+
+        LinearLayout lfoRow = new LinearLayout(this);
+        lfoRow.setOrientation(LinearLayout.HORIZONTAL);
+
+        LinearLayout periodColumn = new LinearLayout(this);
+        periodColumn.setOrientation(LinearLayout.VERTICAL);
+        lfoPeriodLabel = new TextView(this);
+        lfoPeriodLabel.setTextColor(0xffffffff);
+        lfoPeriodLabel.setText("Period 2.0 s");
+        lfoPeriodSeek = new SeekBar(this);
+        lfoPeriodSeek.setMax(450);
+        lfoPeriodSeek.setProgress(150);
+        lfoPeriodSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            public void onStartTrackingTouch(SeekBar s) {}
+            public void onStopTrackingTouch(SeekBar s) {}
+            public void onProgressChanged(SeekBar s, int p, boolean user) {
+                lfoPeriodMs = 500L + p * 10L;
+                lfoPeriodLabel.setText(String.format(Locale.US,
+                        "Period %.1f s", lfoPeriodMs / 1000.0));
+                if (tape3 != null) tape3.setLfoPeriodMs(lfoPeriodMs);
+            }
+        });
+        periodColumn.addView(lfoPeriodLabel);
+        periodColumn.addView(lfoPeriodSeek);
+
+        LinearLayout amountColumn = new LinearLayout(this);
+        amountColumn.setOrientation(LinearLayout.VERTICAL);
+        lfoAmountLabel = new TextView(this);
+        lfoAmountLabel.setTextColor(0xffffffff);
+        lfoAmountLabel.setText("Amount 0.0 s");
+        lfoAmountSeek = new SeekBar(this);
+        lfoAmountSeek.setMax(100);
+        lfoAmountSeek.setProgress(0);
+        lfoAmountSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            public void onStartTrackingTouch(SeekBar s) {}
+            public void onStopTrackingTouch(SeekBar s) {}
+            public void onProgressChanged(SeekBar s, int p, boolean user) {
+                lfoAmountMs = p * 100L;
+                lfoAmountLabel.setText(String.format(Locale.US,
+                        "Amount %.1f s", lfoAmountMs / 1000.0));
+                if (tape3 != null) tape3.setLfoAmountMs(lfoAmountMs);
+            }
+        });
+        amountColumn.addView(lfoAmountLabel);
+        amountColumn.addView(lfoAmountSeek);
+
+        lfoRow.addView(periodColumn, new LinearLayout.LayoutParams(0, -2, 1f));
+        lfoRow.addView(amountColumn, new LinearLayout.LayoutParams(0, -2, 1f));
+        scrubPanel.addView(lfoRow);
+
 
         FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
                 -1, -2, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
@@ -2537,6 +2608,9 @@ public class MainActivity extends Activity {
             final int tape3CameraFps = 120;
             final Tape3 newTape3 =
                     new Tape3(1920, 1080, tape3CameraFps, 40000000, glView.getDecoderSurface(0));
+            newTape3.setLfoPeriodMs(lfoPeriodMs);
+            newTape3.setLfoAmountMs(lfoAmountMs);
+
             newTape3.prepare();
             tape3 = newTape3;
 

@@ -25,6 +25,30 @@ public final class Tape3 {
     private static final int MAX_FRAMES = 32768;
 
     private volatile long requestedDelayUs = 1_000_000L;
+    private volatile long lfoPeriodMs = 2000L;
+    private volatile long lfoAmountMs = 0L;
+    private final long lfoStartNs = System.nanoTime();
+
+    public void setLfoPeriodMs(long ms) {
+        lfoPeriodMs = Math.max(500L, Math.min(5000L, ms));
+    }
+
+    public void setLfoAmountMs(long ms) {
+        lfoAmountMs = Math.max(0L, Math.min(10000L, ms));
+    }
+
+    public long getLfoPeriodMs() { return lfoPeriodMs; }
+    public long getLfoAmountMs() { return lfoAmountMs; }
+
+    private long effectiveDelayUs() {
+        long amount = lfoAmountMs;
+        if (amount == 0L) return requestedDelayUs;
+        double elapsed = (System.nanoTime() - lfoStartNs) / 1000000.0;
+        double phase = 2.0 * Math.PI * elapsed / lfoPeriodMs;
+        double modulation = amount * 500.0 * (1.0 - Math.cos(phase));
+        return requestedDelayUs + Math.round(modulation);
+    }
+
 
     public void setDelayMs(long ms) {
         requestedDelayUs = Math.max(0L, Math.min(30000L, ms)) * 1000L;
@@ -537,7 +561,7 @@ public final class Tape3 {
         int oldest = indexWrite - indexCount;
         if (oldest < 0) oldest += MAX_FRAMES;
 
-        final long target = currentPtsUs - requestedDelayUs;
+        final long target = currentPtsUs - effectiveDelayUs();
 
         int i =
                 indexWrite - 1;
