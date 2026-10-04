@@ -1079,7 +1079,7 @@ public class MainActivity extends Activity {
         scrubPositionLabel.setGravity(Gravity.CENTER);
 
         scrubRightLabel = new TextView(this);
-        scrubRightLabel.setText("0 s");
+        scrubRightLabel.setText("30 s");
         scrubRightLabel.setTextColor(0xffffffff);
         scrubRightLabel.setTextSize(14);
         scrubRightLabel.setGravity(Gravity.RIGHT);
@@ -1090,14 +1090,14 @@ public class MainActivity extends Activity {
 
         scrubSeek = new SeekBar(this);
         scrubSeek.setMax(1000);
-        scrubSeek.setProgress(967);
+        scrubSeek.setProgress(33);
         scrubSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override public void onStartTrackingTouch(SeekBar seekBar) { ramScrubbing = true; }
 
             @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
                 if (glView != null &&
                         glView.getLensMode() == GLView.LensMode.TAPE3) {
-                    long delayMs = (1000L - progress) * 30L;
+                    long delayMs = progress * 30L;
                     if (tape3 != null) tape3.setDelayMs(delayMs);
                     scrubPositionLabel.setText(
                             String.format(Locale.US, "Delay %.2f s", delayMs / 1000.0));
@@ -1129,13 +1129,11 @@ public class MainActivity extends Activity {
 
         Button minus = new Button(this);
         minus.setText("−");
-        minus.setOnClickListener(v ->
-                scrubSeek.setProgress(Math.min(1000, scrubSeek.getProgress() + 10)));
+        installDelayRocker(minus, -10);
 
         Button plus = new Button(this);
         plus.setText("+");
-        plus.setOnClickListener(v ->
-                scrubSeek.setProgress(Math.max(0, scrubSeek.getProgress() - 10)));
+        installDelayRocker(plus, +10);
 
         delayRow.addView(minus, new LinearLayout.LayoutParams(dp(48), dp(48)));
         delayRow.addView(scrubSeek, new LinearLayout.LayoutParams(0, -2, 1f));
@@ -1199,14 +1197,44 @@ public class MainActivity extends Activity {
         scrubPanel.setVisibility(View.GONE);
     }
 
+    void installDelayRocker(Button button, int step) {
+        final Runnable[] repeat = new Runnable[1];
+        repeat[0] = new Runnable() {
+            @Override public void run() {
+                if (scrubSeek != null) {
+                    int p = scrubSeek.getProgress();
+                    scrubSeek.setProgress(Math.max(0, Math.min(1000, p + step)));
+                }
+                mainHandler.postDelayed(this, 50);
+            }
+        };
+        button.setOnTouchListener((v, event) -> {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    mainHandler.removeCallbacks(repeat[0]);
+                    if (scrubSeek != null) {
+                        int p = scrubSeek.getProgress();
+                        scrubSeek.setProgress(Math.max(0, Math.min(1000, p + step)));
+                    }
+                    mainHandler.postDelayed(repeat[0], 300);
+                    return true;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    mainHandler.removeCallbacks(repeat[0]);
+                    return true;
+            }
+            return true;
+        });
+    }
+
     void updateScrubUi() {
         if (scrubPanel == null) return;
         boolean active = glView != null && (glView.getLensMode() == GLView.LensMode.SCRUB || glView.getLensMode() == GLView.LensMode.TAPE3);
         scrubPanel.setVisibility(active ? View.VISIBLE : View.GONE);
         if (!active) return;
         if (glView.getLensMode() == GLView.LensMode.TAPE3) {
-            scrubLeftLabel.setText("30 s");
-            scrubRightLabel.setText("0 s");
+            scrubLeftLabel.setText("0 s");
+            scrubRightLabel.setText("30 s");
             if (!ramScrubbing && tape3 != null)
                 scrubPositionLabel.setText(String.format(
                         Locale.US, "Delay %.2f s", tape3.getDelayMs() / 1000.0));
@@ -1216,7 +1244,7 @@ public class MainActivity extends Activity {
 
         double history = ramBuffer == null ? 0.0 : ramBuffer.getHistorySeconds();
         scrubLeftLabel.setText(String.format(Locale.US, "-%.1f s", history));
-        scrubRightLabel.setText("0 s");
+        scrubRightLabel.setText("30 s");
         if (!ramScrubbing && scrubSeek.getProgress() >= 999) scrubPositionLabel.setText("LIVE");
     }
 
@@ -4237,7 +4265,7 @@ public class MainActivity extends Activity {
             playbackFps = 60;
             activeTestPreset = "RAM_SCRUB_1080P60";
             ramSelectedOffsetMs = 0L;
-            if (scrubSeek != null) scrubSeek.setProgress(967);
+            if (scrubSeek != null) scrubSeek.setProgress(33);
             updateControlButtons();
             updateScrubUi();
             updateOverlay("Scrub RAM 1080p60; restarting");
