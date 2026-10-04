@@ -96,6 +96,7 @@ public class MainActivity extends Activity {
     LinearLayout scrubPanel;
     TextView scrubLeftLabel, scrubRightLabel, scrubPositionLabel;
     SeekBar scrubSeek;
+    View delayDot;
     SeekBar lfoPeriodSeek, lfoAmountSeek;
     TextView lfoPeriodLabel, lfoAmountLabel;
     long lfoPeriodMs = 2000L, lfoAmountMs = 0L;
@@ -559,6 +560,7 @@ public class MainActivity extends Activity {
                     hudTicks++;
                     refreshOverlay();
                     updateScrubUi();
+                    if (delayDot != null) delayDot.invalidate();
 
                     hudHandler.postDelayed(
                             this,
@@ -1136,7 +1138,25 @@ public class MainActivity extends Activity {
         installDelayRocker(plus, +10);
 
         delayRow.addView(minus, new LinearLayout.LayoutParams(dp(48), dp(48)));
-        delayRow.addView(scrubSeek, new LinearLayout.LayoutParams(0, -2, 1f));
+        FrameLayout delayTrack = new FrameLayout(this);
+        delayTrack.addView(scrubSeek, new FrameLayout.LayoutParams(-1, -2));
+        delayDot = new View(this) {
+            final android.graphics.Paint paint = new android.graphics.Paint(3);
+            @Override protected void onDraw(android.graphics.Canvas canvas) {
+                super.onDraw(canvas);
+                if (tape3 == null || glView == null ||
+                        glView.getLensMode() != GLView.LensMode.TAPE3) return;
+                float fraction = Math.min(1f,
+                        tape3.getEffectiveDelayMs() / 30000f);
+                float left = scrubSeek.getPaddingLeft();
+                float right = getWidth() - scrubSeek.getPaddingRight();
+                float x = left + fraction * (right - left);
+                paint.setColor(0xffff7a1a);
+                canvas.drawCircle(x, getHeight() / 2f, dp(4), paint);
+            }
+        };
+        delayTrack.addView(delayDot, new FrameLayout.LayoutParams(-1, -1));
+        delayRow.addView(delayTrack, new LinearLayout.LayoutParams(0, dp(48), 1f));
         delayRow.addView(plus, new LinearLayout.LayoutParams(dp(48), dp(48)));
         scrubPanel.addView(delayRow);
 

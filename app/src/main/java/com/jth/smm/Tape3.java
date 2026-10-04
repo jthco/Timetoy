@@ -39,6 +39,7 @@ public final class Tape3 {
 
     public long getLfoPeriodMs() { return lfoPeriodMs; }
     public long getLfoAmountMs() { return lfoAmountMs; }
+    public long getEffectiveDelayMs() { return effectiveDelayUs() / 1000L; }
 
     private long effectiveDelayUs() {
         long amount = lfoAmountMs;
