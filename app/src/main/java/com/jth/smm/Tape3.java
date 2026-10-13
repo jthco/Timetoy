@@ -17,8 +17,133 @@ import java.nio.ByteBuffer;
  *                         -> 1 second Delay -> AVC decoder -> Surface
  */
 public final class Tape3 {
+    // NANO_TIMING_V1
+    private static final int NANO_COUNT = 12;
+    private static final String[] nanoNames = {
+        "encoder.dequeueOutput",
+        "encoder.getOutput",
+        "encoder.releaseOutput",
+        "decoder.dequeueInput",
+        "decoder.getInput",
+        "decoder.queueInput",
+        "decoder.dequeueOutput",
+        "decoder.releaseOutput",
+        "decoder.flush",
+        "RAM.storeFrame",
+        "RAM.findDelayIndex",
+        "decoder.feedDelayFrame"
+    };
+    private final long[] nanoCounts = new long[NANO_COUNT];
+    private final long[] nanoTotals = new long[NANO_COUNT];
+    private final long[] nanoMax = new long[NANO_COUNT];
+    private final long[] nanoMin = new long[NANO_COUNT];
+    private long nanoLastReport = System.nanoTime();
+    private void nanoRecord(int id, long elapsed) {
+        if (elapsed < 0) return;
+        nanoCounts[id]++;
+        nanoTotals[id] += elapsed;
+        if (elapsed > nanoMax[id]) nanoMax[id] = elapsed;
+        if (nanoMin[id] == 0 || elapsed < nanoMin[id]) nanoMin[id] = elapsed;
+    }
+    private void nanoReport() {
+        long now = System.nanoTime();
+        if (now - nanoLastReport < 5000000000L) return;
+        nanoLastReport = now;
+        TraceLog.i("NANO WINDOW BEGIN");
+        for (int i = 0; i < NANO_COUNT; i++) {
+            long n = nanoCounts[i];
+            if (n > 0) {
+                TraceLog.i("NANO " + nanoNames[i] +
+                    " count=" + n +
+                    " avgNs=" + (nanoTotals[i] / n) +
+                    " minNs=" + nanoMin[i] +
+                    " maxNs=" + nanoMax[i] +
+                    " totalNs=" + nanoTotals[i]);
+            }
+            nanoCounts[i] = 0;
+            nanoTotals[i] = 0;
+            nanoMin[i] = 0;
+            nanoMax[i] = 0;
+        }
+        TraceLog.i("NANO WINDOW END");
+    }
+    private int nanoEncoderDequeue(MediaCodec.BufferInfo info, long timeout) {
+        long t = System.nanoTime();
+        try { return encoder.dequeueOutputBuffer(info, timeout); }
+        finally { nanoRecord(0, System.nanoTime() - t); }
+    }
+    private ByteBuffer nanoEncoderGet(int index) {
+        long t = System.nanoTime();
+        try { return encoder.getOutputBuffer(index); }
+        finally { nanoRecord(1, System.nanoTime() - t); }
+    }
+    private void nanoEncoderRelease(int index, boolean render) {
+        long t = System.nanoTime();
+        try { encoder.releaseOutputBuffer(index, render); }
+        finally { nanoRecord(2, System.nanoTime() - t); }
+    }
+    private int nanoDecoderDequeueInput(long timeout) {
+        long t = System.nanoTime();
+        try { return decoder.dequeueInputBuffer(timeout); }
+        finally { nanoRecord(3, System.nanoTime() - t); }
+    }
+    private ByteBuffer nanoDecoderGetInput(int index) {
+        long t = System.nanoTime();
+        try { return decoder.getInputBuffer(index); }
+        finally { nanoRecord(4, System.nanoTime() - t); }
+    }
+    private void nanoDecoderQueue(int index, int offset, int size, long pts, int flags) {
+        long t = System.nanoTime();
+        try { decoder.queueInputBuffer(index, offset, size, pts, flags); }
+        finally { nanoRecord(5, System.nanoTime() - t); }
+    }
+    private int nanoDecoderDequeueOutput(MediaCodec.BufferInfo info, long timeout) {
+        long t = System.nanoTime();
+        try { return decoder.dequeueOutputBuffer(info, timeout); }
+        finally { nanoRecord(6, System.nanoTime() - t); }
+    }
+    private void nanoDecoderRelease(int index, boolean render) {
+        long t = System.nanoTime();
+        try { decoder.releaseOutputBuffer(index, render); }
+        finally { nanoRecord(7, System.nanoTime() - t); }
+    }
+    private void nanoDecoderFlush() {
+        long t = System.nanoTime();
+        try { decoder.flush(); }
+        finally { nanoRecord(8, System.nanoTime() - t); }
+    }
+    private void nanoStoreFrame(ByteBuffer src, int offset, int size,
+            long pts, boolean key, int flags) {
+        long t = System.nanoTime();
+        try { storeFrame(src, offset, size, pts, key, flags); }
+        finally { nanoRecord(9, System.nanoTime() - t); }
+    }
+    private int nanoFindDelayIndex(long pts) {
+        long t = System.nanoTime();
+        try { return findDelayIndex(pts); }
+        finally { nanoRecord(10, System.nanoTime() - t); }
+    }
+    private void nanoFeedDelayFrame(long pts) {
+        long t = System.nanoTime();
+        try { feedDelayFrame(pts); }
+        finally { nanoRecord(11, System.nanoTime() - t); }
+    }
 
     private static final String MIME = "video/avc";
+    private long timingStartNs = System.nanoTime();
+    private long timingEncoderFrames = 0;
+    private long timingDecoderInputs = 0;
+    private long timingDecoderOutputs = 0;
+    private long timingFlushes = 0;
+    private long timingFlushTotalNs = 0;
+    private long timingFlushMaxNs = 0;
+    private long timingInputTotalNs = 0;
+    private long timingInputMaxNs = 0;
+    private long timingOutputTotalNs = 0;
+    private long timingOutputMaxNs = 0;
+    private long timingEncoderGapMaxNs = 0;
+    private long timingLastEncoderNs = 0;
+
 
     private static final int ARENA_MIB = 128;
     private static final int ARENA_BYTES = ARENA_MIB * 1024 * 1024;
@@ -97,6 +222,21 @@ public final class Tape3 {
     private long decodedFrames = 0;
     private long lastDecodedFrameNumber = -1;
     private int delayTraceFrames = 0;
+
+    private volatile boolean reverse3 = false;
+    private volatile long reverseDurationUs = 2000000L;
+    private boolean workerReverse3 = false;
+    private long reverseAnchorPtsUs = -1L;
+    private long reverseStartNs = 0L;
+
+    public void setReverse3(boolean enabled) {
+        reverse3 = enabled;
+    }
+
+    public void setReverseDurationMs(long ms) {
+        reverseDurationUs = Math.max(500L, Math.min(4000L, ms)) * 1000L;
+    }
+
 
 
     public Tape3(
@@ -240,12 +380,38 @@ public final class Tape3 {
     }
 
 
+    private void reportTiming() {
+        long now = System.nanoTime();
+        long elapsed = now - timingStartNs;
+        if (elapsed < 5000000000L) return;
+        double seconds = elapsed / 1.0e9;
+        TraceLog.i("TAPE3 TIMING" +
+                " encFps=" + (timingEncoderFrames / seconds) +
+                " decInFps=" + (timingDecoderInputs / seconds) +
+                " decOutFps=" + (timingDecoderOutputs / seconds) +
+                " encGapMaxMs=" + (timingEncoderGapMaxNs / 1.0e6) +
+                " flushes=" + timingFlushes +
+                " flushAvgMs=" + (timingFlushTotalNs / 1.0e6 / Math.max(1L, timingFlushes)) +
+                " flushMaxMs=" + (timingFlushMaxNs / 1.0e6) +
+                " inputAvgMs=" + (timingInputTotalNs / 1.0e6 / Math.max(1L, timingDecoderInputs)) +
+                " inputMaxMs=" + (timingInputMaxNs / 1.0e6) +
+                " outputAvgMs=" + (timingOutputTotalNs / 1.0e6 / Math.max(1L, timingDecoderOutputs)) +
+                " outputMaxMs=" + (timingOutputMaxNs / 1.0e6));
+        timingStartNs = now;
+        timingEncoderFrames = timingDecoderInputs = timingDecoderOutputs = 0;
+        timingFlushes = timingFlushTotalNs = timingFlushMaxNs = 0;
+        timingInputTotalNs = timingInputMaxNs = 0;
+        timingOutputTotalNs = timingOutputMaxNs = 0;
+        timingEncoderGapMaxNs = 0;
+    }
+
     private void drainEncoder() {
 
         MediaCodec.BufferInfo info =
                 new MediaCodec.BufferInfo();
 
         while (running) {
+            nanoReport();
 
             final int status;
 
@@ -253,7 +419,7 @@ public final class Tape3 {
                 if (decodedFrames < 12)
                     TraceLog.i("DEEP DEC dequeueOutput BEGIN");
                 status =
-                        encoder.dequeueOutputBuffer(
+                        nanoEncoderDequeue(
                                 info,
                                 10000
                         );
@@ -271,6 +437,7 @@ public final class Tape3 {
             if (status == MediaCodec.INFO_TRY_AGAIN_LATER) {
 
                 drainDecoder();
+            reportTiming();
                 continue;
 
             } else if (
@@ -296,11 +463,11 @@ public final class Tape3 {
 
 
             ByteBuffer src =
-                    encoder.getOutputBuffer(status);
+                    nanoEncoderGet(status);
 
             if (src == null) {
 
-                encoder.releaseOutputBuffer(
+                nanoEncoderRelease(
                         status,
                         false
                 );
@@ -324,7 +491,16 @@ public final class Tape3 {
 
             if (!codecConfig && info.size > 0) {
 
-                storeFrame(
+                long encoderNowNs = System.nanoTime();
+                if (timingLastEncoderNs != 0L) {
+                    long gap = encoderNowNs - timingLastEncoderNs;
+                    if (gap > timingEncoderGapMaxNs)
+                        timingEncoderGapMaxNs = gap;
+                }
+                timingLastEncoderNs = encoderNowNs;
+                timingEncoderFrames++;
+
+                nanoStoreFrame(
                         src,
                         info.offset,
                         info.size,
@@ -332,18 +508,19 @@ public final class Tape3 {
                         keyFrame, flags
                 );
 
-                feedDelayFrame(
+                nanoFeedDelayFrame(
                         info.presentationTimeUs
                 );
             }
 
 
-            encoder.releaseOutputBuffer(
+            nanoEncoderRelease(
                     status,
                     false
             );
 
             drainDecoder();
+            reportTiming();
         }
 
         TraceLog.i("TAPE3 drain stopped");
@@ -586,14 +763,54 @@ public final class Tape3 {
     }
 
 
+    private int findReverseIndex(long currentPtsUs) {
+        long duration = reverseDurationUs;
+        int oldest = indexWrite - indexCount;
+        if (oldest < 0) oldest += MAX_FRAMES;
+        if (indexCount == 0 ||
+                currentPtsUs - ptsUs[oldest] < duration) return -1;
+
+        long now = System.nanoTime();
+        if (reverseAnchorPtsUs < 0 ||
+                now - reverseStartNs >= duration * 1000L) {
+            reverseAnchorPtsUs = currentPtsUs;
+            reverseStartNs = now;
+        }
+
+        long elapsedUs = (now - reverseStartNs) / 1000L;
+        long target = reverseAnchorPtsUs - elapsedUs;
+        int i = indexWrite - 1;
+        if (i < 0) i = MAX_FRAMES - 1;
+        for (int n = 0; n < indexCount; n++) {
+            if (ptsUs[i] <= target) return i;
+            if (--i < 0) i = MAX_FRAMES - 1;
+        }
+        return oldest;
+    }
+
     private void feedDelayFrame(long currentPtsUs) {
 
         if (!decoderReady || decoder == null) return;
 
+        if (workerReverse3 != reverse3) {
+            workerReverse3 = reverse3;
+            reverseAnchorPtsUs = -1L;
+            lastDecodedFrameNumber = -1L;
+            long flushBeginNs = System.nanoTime();
+            nanoDecoderFlush();
+            long flushElapsedNs = System.nanoTime() - flushBeginNs;
+            timingFlushes++;
+            timingFlushTotalNs += flushElapsedNs;
+            if (flushElapsedNs > timingFlushMaxNs)
+                timingFlushMaxNs = flushElapsedNs;
+            TraceLog.i("TAPE3 playback mode=" +
+                    (workerReverse3 ? "REVERSE3" : "DELAY"));
+        }
+
         final boolean deepTrace = delayTraceFrames < 12;
         if (deepTrace) TraceLog.i("DEEP DELAY feed ENTER currentPts=" + currentPtsUs);
         final int tapeIndex =
-                findDelayIndex(currentPtsUs);
+                workerReverse3 ? findReverseIndex(currentPtsUs) : findDelayIndex(currentPtsUs);
 
 
         if (tapeIndex < 0) return;
@@ -619,7 +836,13 @@ public final class Tape3 {
         if (lastDecodedFrameNumber >= 0 &&
                 (frameNumber < lastDecodedFrameNumber ||
                  frameNumber > lastDecodedFrameNumber + fps / 4)) {
-            decoder.flush();
+            long flushBeginNs = System.nanoTime();
+            nanoDecoderFlush();
+            long flushElapsedNs = System.nanoTime() - flushBeginNs;
+            timingFlushes++;
+            timingFlushTotalNs += flushElapsedNs;
+            if (flushElapsedNs > timingFlushMaxNs)
+                timingFlushMaxNs = flushElapsedNs;
         }
 
         if (frameNumber == lastDecodedFrameNumber) {
@@ -631,7 +854,7 @@ public final class Tape3 {
 
         try {
             inputIndex =
-                    decoder.dequeueInputBuffer(0);
+                    nanoDecoderDequeueInput(0);
             if (deepTrace) TraceLog.i("DEEP DELAY dequeueInput RESULT=" + inputIndex);
         } catch (Throwable t) {
             return;
@@ -641,7 +864,7 @@ public final class Tape3 {
 
 
         ByteBuffer dst =
-                decoder.getInputBuffer(inputIndex);
+                nanoDecoderGetInput(inputIndex);
 
         if (dst == null) return;
 
@@ -670,13 +893,19 @@ public final class Tape3 {
         if (deepTrace) TraceLog.i("DEEP DELAY queueInput BEGIN");
         if (lastDecodedFrameNumber < 0)
             TraceLog.i("DEEP AVC >>> QUEUE FIRST ACCESS UNIT");
-        decoder.queueInputBuffer(
+        long inputBeginNs = System.nanoTime();
+        nanoDecoderQueue(
                 inputIndex,
                 0,
                 length,
                 ptsUs[tapeIndex],
                 MediaCodec.BUFFER_FLAG_KEY_FRAME
         );
+        long inputElapsedNs = System.nanoTime() - inputBeginNs;
+        timingDecoderInputs++;
+        timingInputTotalNs += inputElapsedNs;
+        if (inputElapsedNs > timingInputMaxNs)
+            timingInputMaxNs = inputElapsedNs;
 
         if (lastDecodedFrameNumber < 0)
             TraceLog.i("DEEP AVC <<< QUEUE FIRST ACCESS UNIT RETURNED");
@@ -707,7 +936,7 @@ public final class Tape3 {
                 if (decodedFrames < 12)
                     TraceLog.i("DEEP DEC dequeueOutput BEGIN");
                 status =
-                        decoder.dequeueOutputBuffer(
+                        nanoDecoderDequeueOutput(
                                 info,
                                 0
                         );
@@ -738,13 +967,19 @@ public final class Tape3 {
             if (decodedFrames < 12)
                 TraceLog.i("DEEP DEC releaseOutput TRUE BEGIN status=" + status +
                         " pts=" + info.presentationTimeUs);
-            decoder.releaseOutputBuffer(
+            long outputBeginNs = System.nanoTime();
+            nanoDecoderRelease(
                     status,
                     true
             );
 
             if (decodedFrames < 12)
                 TraceLog.i("DEEP DEC releaseOutput TRUE END status=" + status);
+            long outputElapsedNs = System.nanoTime() - outputBeginNs;
+            timingDecoderOutputs++;
+            timingOutputTotalNs += outputElapsedNs;
+            if (outputElapsedNs > timingOutputMaxNs)
+                timingOutputMaxNs = outputElapsedNs;
             decodedFrames++;
 
             if (decodedFrames == 1) {

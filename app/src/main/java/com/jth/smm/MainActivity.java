@@ -293,7 +293,7 @@ public class MainActivity extends Activity {
                     Long timestamp = result.get(CaptureResult.SENSOR_TIMESTAMP);
                     FrameAudit.cameraCapture(timestamp == null ? -1L : timestamp);
 
-                    if (glView != null && glView.getLensMode() == GLView.LensMode.TAPE3) {
+                    if (glView != null && glView.getLensMode() == GLView.LensMode.TAPE3 || glView.getLensMode() == GLView.LensMode.REVERSE3) {
                         tape3AuditFrames++;
                         Long tape3FrameDuration =
                                 result.get(CaptureResult.SENSOR_FRAME_DURATION);
@@ -1098,7 +1098,7 @@ public class MainActivity extends Activity {
 
             @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
                 if (glView != null &&
-                        glView.getLensMode() == GLView.LensMode.TAPE3) {
+                        glView.getLensMode() == GLView.LensMode.TAPE3 || glView.getLensMode() == GLView.LensMode.REVERSE3) {
                     long delayMs = progress * 30L;
                     if (tape3 != null) tape3.setDelayMs(delayMs);
                     scrubPositionLabel.setText(
@@ -1252,7 +1252,7 @@ public class MainActivity extends Activity {
         boolean active = glView != null && (glView.getLensMode() == GLView.LensMode.SCRUB || glView.getLensMode() == GLView.LensMode.TAPE3);
         scrubPanel.setVisibility(active ? View.VISIBLE : View.GONE);
         if (!active) return;
-        if (glView.getLensMode() == GLView.LensMode.TAPE3) {
+        if (glView.getLensMode() == GLView.LensMode.TAPE3 || glView.getLensMode() == GLView.LensMode.REVERSE3) {
             scrubLeftLabel.setText("0 s");
             scrubRightLabel.setText("30 s");
             if (!ramScrubbing && tape3 != null)
@@ -1352,11 +1352,12 @@ public class MainActivity extends Activity {
 
     void showModeChoices(View anchor) {
         showChoicePopup(anchor,
-                new String[]{"TAPE3", "CREV", "RAMREV", "REVERSE", "SLOW", "FAST", "FREEZE", "STUTTER", "SCRUB", "REWIND"},
+                new String[]{"TAPE3", "CREV", "RAMREV", "REVERSE3", "REVERSE", "SLOW", "FAST", "FREEZE", "STUTTER", "SCRUB", "REWIND"},
                 new Runnable[]{
                         () -> setLensMode(GLView.LensMode.TAPE3),
                         () -> setLensMode(GLView.LensMode.CREV),
                         () -> setLensMode(GLView.LensMode.RAMREV),
+                        () -> setLensMode(GLView.LensMode.REVERSE3),
                         () -> setLensMode(GLView.LensMode.DUBBUF_REVERSE),
                         () -> setLensMode(GLView.LensMode.SLOW),
                         () -> setLensMode(GLView.LensMode.FAST),
@@ -1366,7 +1367,7 @@ public class MainActivity extends Activity {
                         () -> setLensMode(GLView.LensMode.REWIND)
                 },
                 new int[]{
-                        MODE_CREV, MODE_CREV, MODE_RAMREV, MODE_REVERSE, MODE_SLOW, MODE_FAST,
+                        MODE_CREV, MODE_CREV, MODE_RAMREV, MODE_REVERSE, MODE_REVERSE, MODE_SLOW, MODE_FAST,
                         MODE_FREEZE, MODE_STUTTER, MODE_SCRUB, MODE_REWIND
                 });
     }
@@ -1821,7 +1822,7 @@ public class MainActivity extends Activity {
         reverseLensButton.setOnClickListener(v ->
                 setLensMode(GLView.LensMode.FAST));
         dubBufReverseButton.setOnClickListener(v ->
-                setLensMode(GLView.LensMode.DUBBUF_REVERSE));
+                setLensMode(GLView.LensMode.REVERSE3));
 
         slowLensButton.setOnClickListener(v ->
                 setLensMode(GLView.LensMode.SLOW));
@@ -1945,13 +1946,13 @@ public class MainActivity extends Activity {
 
         running = true;
 
-        if (glView.getLensMode() == GLView.LensMode.TAPE3) {
+        if (glView.getLensMode() == GLView.LensMode.TAPE3 || glView.getLensMode() == GLView.LensMode.REVERSE3) {
             updateOverlay("Starting Tape3 1080p60 All-I");
             startTape3Session(() -> {
                 TraceLog.i("TAPE3 active 1080p60 All-I");
                 mainHandler.postDelayed(() -> {
                     if (tape3 != null &&
-                            glView.getLensMode() == GLView.LensMode.TAPE3) {
+                            glView.getLensMode() == GLView.LensMode.TAPE3 || glView.getLensMode() == GLView.LensMode.REVERSE3) {
                         glView.showTape3Delay();
                         TraceLog.i("TAPE3 DELAY display selected 1.000s");
                     }
@@ -2658,6 +2659,8 @@ public class MainActivity extends Activity {
                     new Tape3(1920, 1080, tape3CameraFps, 40000000, glView.getDecoderSurface(0));
             newTape3.setLfoPeriodMs(lfoPeriodMs);
             newTape3.setLfoAmountMs(lfoAmountMs);
+            newTape3.setReverse3(glView.getLensMode() == GLView.LensMode.REVERSE3);
+            newTape3.setReverseDurationMs(reversePlaybackMs);
 
             newTape3.prepare();
             tape3 = newTape3;
@@ -2684,7 +2687,7 @@ public class MainActivity extends Activity {
                         @Override public void onConfigured(CameraCaptureSession s) {
                             try {
                                 if (tape3 != newTape3 ||
-                                        glView.getLensMode() != GLView.LensMode.TAPE3) {
+                                        glView.getLensMode() != GLView.LensMode.TAPE3 && glView.getLensMode() != GLView.LensMode.REVERSE3) {
                                     try { s.close(); } catch (Exception ignored) {}
                                     newTape3.stopAndRelease();
                                     return;
@@ -4189,6 +4192,32 @@ public class MainActivity extends Activity {
             return;
         }
 
+        if (mode == GLView.LensMode.TAPE3 ||
+                mode == GLView.LensMode.REVERSE3) {
+            if (tape3 != null &&
+                    (glView.getLensMode() == GLView.LensMode.TAPE3 ||
+                     glView.getLensMode() == GLView.LensMode.REVERSE3)) {
+                tape3.setReverse3(mode == GLView.LensMode.REVERSE3);
+                glView.setLensMode(mode);
+                glView.showTape3Delay();
+                updateControlButtons();
+                updateScrubUi();
+                updateOverlay(mode == GLView.LensMode.REVERSE3 ? "Reverse3" : "Delay");
+                return;
+            }
+            running = false;
+            glView.setLensMode(mode);
+            captureFps = 60;
+            captureWidth = 1920;
+            captureHeight = 1080;
+            playbackFps = 60;
+            activeTestPreset = "TAPE3_1080P60";
+            updateControlButtons();
+            updateScrubUi();
+            scheduleCameraRecovery("Tape3 mode restart");
+            return;
+        }
+
         if (mode == GLView.LensMode.DUBBUF_REVERSE) {
             running = false; recordingFollowing = false; recordingCycleId = -1; loadingCycleId = -1;
             glView.stopFreeze(); glView.releaseAllPlayers(); glView.setLensMode(mode);
@@ -4458,6 +4487,36 @@ public class MainActivity extends Activity {
             recordCueMs = 0;
             activeTestPreset = "SLOW_" + slowPlaybackMs + "MS_X" + slowFactor;
             updateOverlay("Slow Time " + (slowPlaybackMs / 1000.0f) + " s");
+        if (mode == GLView.LensMode.TAPE3 ||
+                mode == GLView.LensMode.REVERSE3) {
+            if (tape3 != null &&
+                    (glView.getLensMode() == GLView.LensMode.TAPE3 ||
+                     glView.getLensMode() == GLView.LensMode.REVERSE3)) {
+                tape3.setReverse3(mode == GLView.LensMode.REVERSE3);
+                glView.setLensMode(mode);
+                glView.showTape3Delay();
+                updateControlButtons();
+                updateScrubUi();
+                updateOverlay(mode == GLView.LensMode.REVERSE3 ? "Reverse3" : "Delay");
+                return;
+            }
+            running = false;
+            glView.setLensMode(mode);
+            captureFps = 60;
+            captureWidth = 1920;
+            captureHeight = 1080;
+            playbackFps = 60;
+            activeTestPreset = "TAPE3_1080P60";
+            updateControlButtons();
+            updateScrubUi();
+            scheduleCameraRecovery("Tape3 mode restart");
+            return;
+        }
+
+        } else if (mode == GLView.LensMode.REVERSE3) {
+            reversePlaybackMs = Math.max(500, Math.min(4000, durationMs));
+            if (tape3 != null) tape3.setReverseDurationMs(reversePlaybackMs);
+            updateOverlay("Reverse3 Time " + (reversePlaybackMs / 1000.0f) + " s");
         } else if (mode == GLView.LensMode.DUBBUF_REVERSE) {
             reversePlaybackMs = Math.max(500, Math.min(4000, durationMs));
             glView.startDubBufReverse(reversePlaybackMs, null);
@@ -4591,6 +4650,7 @@ public class MainActivity extends Activity {
 
     String currentLensTitle() {
         if (glView == null) return "Timetoy";
+        if (glView.getLensMode() == GLView.LensMode.REVERSE3) return "Reverse3";
         if (glView.getLensMode() == GLView.LensMode.DUBBUF_REVERSE) return "Reverse";
         if (glView.getLensMode() == GLView.LensMode.SLOW) return "Slow";
         if (glView.getLensMode() == GLView.LensMode.FREEZE) return "Freeze";
@@ -4880,7 +4940,7 @@ public class MainActivity extends Activity {
             if (overlay == null) return;
 
             if (glView != null &&
-                    glView.getLensMode() == GLView.LensMode.TAPE3) {
+                    glView.getLensMode() == GLView.LensMode.TAPE3 || glView.getLensMode() == GLView.LensMode.REVERSE3) {
                 Tape3 t = tape3;
                 double sensorFps = tape3SensorFrameMs > 0.0
                         ? 1000.0 / tape3SensorFrameMs : 0.0;
