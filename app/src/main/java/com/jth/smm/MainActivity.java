@@ -636,7 +636,7 @@ public class MainActivity extends Activity {
         captureHeight = 1080;
         playbackFps = 60;
         activeTestPreset = "TAPE3_1080P60";
-        glView.setLensMode(GLView.LensMode.TAPE3);
+        glView.setLensMode(GLView.LensMode.REVERSE3);
 
         root.addView(
                 glView,

@@ -226,6 +226,9 @@ public final class Tape3 {
     private volatile boolean reverse3 = false;
     private volatile long reverseDurationUs = 2000000L;
     private boolean workerReverse3 = false;
+    private long reverseSelectLastNs = 0L;
+    private long reverseSelectLastFrame = -1L;
+    private long decoderPlaybackPtsUs = 0L;
     private long reverseAnchorPtsUs = -1L;
     private long reverseStartNs = 0L;
 
@@ -794,6 +797,7 @@ public final class Tape3 {
 
         if (workerReverse3 != reverse3) {
             workerReverse3 = reverse3;
+            decoderPlaybackPtsUs = 0L;
             reverseAnchorPtsUs = -1L;
             lastDecodedFrameNumber = -1L;
             long flushBeginNs = System.nanoTime();
@@ -829,11 +833,26 @@ public final class Tape3 {
         final long frameNumber =
                 frameNumbers[tapeIndex];
 
+        if (workerReverse3) {
+            long selectNowNs = System.nanoTime();
+            long intervalUs = reverseSelectLastNs == 0L ? 0L :
+                    (selectNowNs - reverseSelectLastNs) / 1000L;
+            long frameDelta = reverseSelectLastFrame < 0L ? 0L :
+                    frameNumber - reverseSelectLastFrame;
+            TraceLog.i("REV3 SELECT frame=" + frameNumber +
+                    " delta=" + frameDelta +
+                    " intervalUs=" + intervalUs +
+                    " duplicate=" + (frameNumber == lastDecodedFrameNumber) +
+                    " lastSubmitted=" + lastDecodedFrameNumber);
+            reverseSelectLastNs = selectNowNs;
+            reverseSelectLastFrame = frameNumber;
+        }
+
         /*
          * Don't submit the same stored frame repeatedly if camera
          * cadence and encoder callbacks momentarily differ.
          */
-        if (lastDecodedFrameNumber >= 0 &&
+        if (!workerReverse3 && lastDecodedFrameNumber >= 0 &&
                 (frameNumber < lastDecodedFrameNumber ||
                  frameNumber > lastDecodedFrameNumber + fps / 4)) {
             long flushBeginNs = System.nanoTime();
@@ -898,7 +917,7 @@ public final class Tape3 {
                 inputIndex,
                 0,
                 length,
-                ptsUs[tapeIndex],
+                workerReverse3 ? (decoderPlaybackPtsUs += 1000000L / fps) : ptsUs[tapeIndex],
                 MediaCodec.BUFFER_FLAG_KEY_FRAME
         );
         long inputElapsedNs = System.nanoTime() - inputBeginNs;
