@@ -184,8 +184,8 @@ public final class Tape3 {
         long amount = lfoAmountMs;
         if (amount == 0L) return requestedDelayUs;
         double elapsed = (System.nanoTime() - lfoStartNs) / 1000000.0;
-        double phase = 2.0 * Math.PI * elapsed / lfoPeriodMs;
-        double modulation = amount * 500.0 * (1.0 - Math.cos(phase));
+        double phase = (elapsed % lfoPeriodMs) / lfoPeriodMs;
+        double modulation = amount * 1000.0 * (1.0 - Math.abs(2.0 * phase - 1.0));
         return requestedDelayUs + Math.round(modulation);
     }
 

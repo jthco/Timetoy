@@ -235,7 +235,7 @@ boolean portrait =
         == android.content.res.Configuration.ORIENTATION_PORTRAIT;
 android.opengl.Matrix.rotateM(
         cameraCorrectionMatrix, 0,
-        portrait ? 90f : 0f,
+        0f,
         0f, 0f, 1f
 );
                 android.opengl.Matrix.translateM(cameraCorrectionMatrix, 0, -0.5f, -0.5f, 0f);
