@@ -143,6 +143,20 @@ public final class Tape3 {
     private long timingOutputMaxNs = 0;
     private long timingEncoderGapMaxNs = 0;
     private long timingLastEncoderNs = 0;
+    // CLOCKTRACE V1: independent timing at each pipeline stage.
+    private long ctLastEncNs = 0L;
+    private long ctLastEncPts = -1L;
+    private long ctLastSelectNs = 0L;
+    private long ctLastSelectFrame = -1L;
+    private long ctLastQueueNs = 0L;
+    private long ctLastOutputNs = 0L;
+    private long ctSeq = 0L;
+    private void ct(String stage, String details) {
+        TraceLog.i("CLOCKTRACE seq=" + (++ctSeq) +
+                " tNs=" + System.nanoTime() +
+                " mode=" + (workerReverse3 ? "REV" : "FWD") +
+                " stage=" + stage + " " + details);
+    }
 
 
     private static final int ARENA_MIB = 128;
@@ -502,6 +516,15 @@ public final class Tape3 {
                 }
                 timingLastEncoderNs = encoderNowNs;
                 timingEncoderFrames++;
+                long ctEncNs = System.nanoTime();
+                ct("ENC", "frame=" + totalFrames +
+                        " ptsUs=" + info.presentationTimeUs +
+                        " wallGapUs=" + (ctLastEncNs == 0L ? 0L :
+                            (ctEncNs - ctLastEncNs) / 1000L) +
+                        " ptsGapUs=" + (ctLastEncPts < 0L ? 0L :
+                            info.presentationTimeUs - ctLastEncPts));
+                ctLastEncNs = ctEncNs;
+                ctLastEncPts = info.presentationTimeUs;
 
                 nanoStoreFrame(
                         src,
@@ -833,6 +856,18 @@ public final class Tape3 {
         final long frameNumber =
                 frameNumbers[tapeIndex];
 
+        long ctSelectNs = System.nanoTime();
+        ct("SELECT", "frame=" + frameNumber +
+                " frameDelta=" + (ctLastSelectFrame < 0L ? 0L :
+                    frameNumber - ctLastSelectFrame) +
+                " wallGapUs=" + (ctLastSelectNs == 0L ? 0L :
+                    (ctSelectNs - ctLastSelectNs) / 1000L) +
+                " ptsUs=" + ptsUs[tapeIndex] +
+                " currentPtsUs=" + currentPtsUs +
+                " lastSubmitted=" + lastDecodedFrameNumber);
+        ctLastSelectNs = ctSelectNs;
+        ctLastSelectFrame = frameNumber;
+
         if (workerReverse3) {
             long selectNowNs = System.nanoTime();
             long intervalUs = reverseSelectLastNs == 0L ? 0L :
@@ -852,19 +887,11 @@ public final class Tape3 {
          * Don't submit the same stored frame repeatedly if camera
          * cadence and encoder callbacks momentarily differ.
          */
-        if (!workerReverse3 && lastDecodedFrameNumber >= 0 &&
-                (frameNumber < lastDecodedFrameNumber ||
-                 frameNumber > lastDecodedFrameNumber + fps / 4)) {
-            long flushBeginNs = System.nanoTime();
-            nanoDecoderFlush();
-            long flushElapsedNs = System.nanoTime() - flushBeginNs;
-            timingFlushes++;
-            timingFlushTotalNs += flushElapsedNs;
-            if (flushElapsedNs > timingFlushMaxNs)
-                timingFlushMaxNs = flushElapsedNs;
-        }
+        // No decoder flush on Forward-mode playhead reversals or jumps.
+        // Preserve the decoder across sine-wave direction changes.
 
         if (frameNumber == lastDecodedFrameNumber) {
+            ct("SKIP_DUP", "frame=" + frameNumber);
             return;
         }
 
@@ -879,7 +906,11 @@ public final class Tape3 {
             return;
         }
 
-        if (inputIndex < 0) return;
+        if (inputIndex < 0) {
+            ct("NO_INPUT", "frame=" + frameNumber +
+                    " inputIndex=" + inputIndex);
+            return;
+        }
 
 
         ByteBuffer dst =
@@ -922,6 +953,14 @@ public final class Tape3 {
         );
         long inputElapsedNs = System.nanoTime() - inputBeginNs;
         timingDecoderInputs++;
+        long ctQueueNs = System.nanoTime();
+        ct("QUEUE", "frame=" + frameNumber +
+                " wallGapUs=" + (ctLastQueueNs == 0L ? 0L :
+                    (ctQueueNs - ctLastQueueNs) / 1000L) +
+                " tapePtsUs=" + ptsUs[tapeIndex] +
+                " decoderPtsUs=" +
+                    (workerReverse3 ? decoderPlaybackPtsUs : ptsUs[tapeIndex]));
+        ctLastQueueNs = ctQueueNs;
         timingInputTotalNs += inputElapsedNs;
         if (inputElapsedNs > timingInputMaxNs)
             timingInputMaxNs = inputElapsedNs;
@@ -996,6 +1035,11 @@ public final class Tape3 {
                 TraceLog.i("DEEP DEC releaseOutput TRUE END status=" + status);
             long outputElapsedNs = System.nanoTime() - outputBeginNs;
             timingDecoderOutputs++;
+            long ctOutputNs = System.nanoTime();
+            ct("OUTPUT", "ptsUs=" + info.presentationTimeUs +
+                    " wallGapUs=" + (ctLastOutputNs == 0L ? 0L :
+                        (ctOutputNs - ctLastOutputNs) / 1000L));
+            ctLastOutputNs = ctOutputNs;
             timingOutputTotalNs += outputElapsedNs;
             if (outputElapsedNs > timingOutputMaxNs)
                 timingOutputMaxNs = outputElapsedNs;
