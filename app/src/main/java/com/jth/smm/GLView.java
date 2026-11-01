@@ -25,7 +25,7 @@ public class GLView extends GLSurfaceView {
     private final LensPlayer[] players = new LensPlayer[2];
     private final LensMode[] slotModes = new LensMode[2];
 
-    public enum LensMode { REVERSE, DUBBUF_REVERSE, SLOW, FREEZE, STUTTER, FAST, SCRUB, REWIND, RAMREV, CREV, TAPE3, REVERSE3 }
+    public enum LensMode { REVERSE, DUBBUF_REVERSE, SLOW, FREEZE, STUTTER, FAST, SCRUB, REWIND, RAMREV, CREV, TAPE3, REVERSE3, REPLAY, MOLASSES, DOWNSHIFT }
 
     private volatile LensMode lensMode = LensMode.DUBBUF_REVERSE;
     private final boolean[] waitingForFirstTexture = new boolean[2];
@@ -124,6 +124,12 @@ public class GLView extends GLSurfaceView {
         if (mode != LensMode.FAST) stopFast();
         lensMode = mode;
         TraceLog.i("Lens mode=" + mode);
+    }
+
+    public static boolean isTapeMode(LensMode mode) {
+        return mode == LensMode.TAPE3 || mode == LensMode.REVERSE3 ||
+                mode == LensMode.REPLAY || mode == LensMode.MOLASSES ||
+                mode == LensMode.DOWNSHIFT;
     }
 
     public LensMode getLensMode() { return lensMode; }

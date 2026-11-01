@@ -99,6 +99,30 @@ public class MainActivity extends Activity {
     View delayDot;
     SeekBar lfoPeriodSeek, lfoAmountSeek;
     TextView lfoPeriodLabel, lfoAmountLabel;
+    float downshiftFactor = 0.25f;
+    boolean downshiftDelayed, downshiftResetGesture;
+
+    boolean isManualTapeMode() {
+        if (glView == null) return false;
+        GLView.LensMode mode = glView.getLensMode();
+        return mode == GLView.LensMode.REPLAY || mode == GLView.LensMode.MOLASSES ||
+                mode == GLView.LensMode.DOWNSHIFT;
+    }
+
+    void configureTapeMode(Tape3 tape) {
+        tape.setReverse3(glView.getLensMode() == GLView.LensMode.REVERSE3);
+        tape.setManualPlayback(isManualTapeMode());
+        tape.setLfoPeriodMs(lfoPeriodMs);
+        tape.setLfoAmountMs(glView.getLensMode() == GLView.LensMode.TAPE3 ? lfoAmountMs : 0L);
+        downshiftDelayed = downshiftResetGesture = false;
+    }
+
+    void showTapeOutput() {
+        if (tape3 != null && isManualTapeMode() && tape3.isPlaybackLive())
+            glView.showRamLive();
+        else glView.showTape3Delay();
+    }
+
     long lfoPeriodMs = 2000L, lfoAmountMs = 0L;
 
     Button slices2Button, slices4Button, slices6Button, slices8Button;
@@ -293,7 +317,7 @@ public class MainActivity extends Activity {
                     Long timestamp = result.get(CaptureResult.SENSOR_TIMESTAMP);
                     FrameAudit.cameraCapture(timestamp == null ? -1L : timestamp);
 
-                    if (glView != null && glView.getLensMode() == GLView.LensMode.TAPE3 || glView.getLensMode() == GLView.LensMode.REVERSE3) {
+                    if (glView != null && GLView.isTapeMode(glView.getLensMode())) {
                         tape3AuditFrames++;
                         Long tape3FrameDuration =
                                 result.get(CaptureResult.SENSOR_FRAME_DURATION);
@@ -636,7 +660,7 @@ public class MainActivity extends Activity {
         captureHeight = 1080;
         playbackFps = 60;
         activeTestPreset = "TAPE3_1080P60";
-        glView.setLensMode(GLView.LensMode.REVERSE3);
+        glView.setLensMode(GLView.LensMode.TAPE3);
 
         root.addView(
                 glView,
@@ -662,6 +686,35 @@ public class MainActivity extends Activity {
 
 
         glView.setOnTouchListener((v, event) -> {
+            if (isManualTapeMode()) {
+                if (tape3 == null) return true;
+                GLView.LensMode mode = glView.getLensMode();
+                switch (event.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        if (mode == GLView.LensMode.DOWNSHIFT && downshiftDelayed) {
+                            tape3.jumpToLive();
+                            downshiftDelayed = false;
+                            downshiftResetGesture = true;
+                            showTapeOutput();
+                        } else {
+                            downshiftResetGesture = false;
+                            tape3.setPlaybackSpeed(mode == GLView.LensMode.REPLAY ? -1.0 :
+                                    mode == GLView.LensMode.MOLASSES ? 0.25 : downshiftFactor);
+                            glView.showTape3Delay();
+                        }
+                        return true;
+                    case MotionEvent.ACTION_UP:
+                    case MotionEvent.ACTION_CANCEL:
+                        if (!downshiftResetGesture) {
+                            tape3.setPlaybackSpeed(mode == GLView.LensMode.DOWNSHIFT ? 1.0 : 3.0);
+                            downshiftDelayed = mode == GLView.LensMode.DOWNSHIFT;
+                        }
+                        downshiftResetGesture = false;
+                        v.performClick();
+                        return true;
+                }
+                return true;
+            }
             if (glView.getLensMode() != GLView.LensMode.REWIND) {
                 if (event.getActionMasked() == MotionEvent.ACTION_UP) {
                     diagnosticVisible = !diagnosticVisible;
@@ -1098,7 +1151,7 @@ public class MainActivity extends Activity {
 
             @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
                 if (glView != null &&
-                        glView.getLensMode() == GLView.LensMode.TAPE3 || glView.getLensMode() == GLView.LensMode.REVERSE3) {
+                        GLView.isTapeMode(glView.getLensMode())) {
                     long delayMs = progress * 30L;
                     if (tape3 != null) tape3.setDelayMs(delayMs);
                     scrubPositionLabel.setText(
@@ -1252,7 +1305,7 @@ public class MainActivity extends Activity {
         boolean active = glView != null && (glView.getLensMode() == GLView.LensMode.SCRUB || glView.getLensMode() == GLView.LensMode.TAPE3);
         scrubPanel.setVisibility(active ? View.VISIBLE : View.GONE);
         if (!active) return;
-        if (glView.getLensMode() == GLView.LensMode.TAPE3 || glView.getLensMode() == GLView.LensMode.REVERSE3) {
+        if (GLView.isTapeMode(glView.getLensMode())) {
             scrubLeftLabel.setText("0 s");
             scrubRightLabel.setText("30 s");
             if (!ramScrubbing && tape3 != null)
@@ -1351,25 +1404,21 @@ public class MainActivity extends Activity {
     }
 
     void showModeChoices(View anchor) {
+        // Chunked, contiguous, manual; Downshift intentionally closes the list.
         showChoicePopup(anchor,
-                new String[]{"TAPE3", "CREV", "RAMREV", "REVERSE3", "REVERSE", "SLOW", "FAST", "FREEZE", "STUTTER", "SCRUB", "REWIND"},
+                new String[]{"SLOW", "FAST", "REVERSE", "STUTTER", "WOBBLE", "REPLAY", "MOLASSES", "DOWNSHIFT"},
                 new Runnable[]{
-                        () -> setLensMode(GLView.LensMode.TAPE3),
-                        () -> setLensMode(GLView.LensMode.CREV),
-                        () -> setLensMode(GLView.LensMode.RAMREV),
-                        () -> setLensMode(GLView.LensMode.REVERSE3),
-                        () -> setLensMode(GLView.LensMode.DUBBUF_REVERSE),
                         () -> setLensMode(GLView.LensMode.SLOW),
                         () -> setLensMode(GLView.LensMode.FAST),
-                        () -> setLensMode(GLView.LensMode.FREEZE),
+                        () -> setLensMode(GLView.LensMode.DUBBUF_REVERSE),
                         () -> setLensMode(GLView.LensMode.STUTTER),
-                        () -> setLensMode(GLView.LensMode.SCRUB),
-                        () -> setLensMode(GLView.LensMode.REWIND)
+                        () -> setLensMode(GLView.LensMode.TAPE3),
+                        () -> setLensMode(GLView.LensMode.REPLAY),
+                        () -> setLensMode(GLView.LensMode.MOLASSES),
+                        () -> setLensMode(GLView.LensMode.DOWNSHIFT)
                 },
-                new int[]{
-                        MODE_CREV, MODE_CREV, MODE_RAMREV, MODE_REVERSE, MODE_REVERSE, MODE_SLOW, MODE_FAST,
-                        MODE_FREEZE, MODE_STUTTER, MODE_SCRUB, MODE_REWIND
-                });
+                new int[]{MODE_SLOW, MODE_FAST, MODE_REVERSE, MODE_STUTTER,
+                        MODE_CREV, MODE_REWIND, MODE_SLOW, MODE_REWIND});
     }
 
     void showTimeChoices(View anchor) {
@@ -1411,7 +1460,15 @@ public class MainActivity extends Activity {
 
     void showFactorChoices(View anchor) {
         GLView.LensMode m = glView.getLensMode();
-        if (m == GLView.LensMode.SLOW) {
+        if (m == GLView.LensMode.DOWNSHIFT) {
+            float[] factors = {0.125f, 0.25f, 0.5f};
+            Runnable[] actions = new Runnable[factors.length];
+            for (int i = 0; i < factors.length; i++) {
+                final float factor = factors[i];
+                actions[i] = () -> { downshiftFactor = factor; updateModeRail(); };
+            }
+            showChoicePopup(anchor, new String[]{"1/8", "1/4", "1/2"}, actions);
+        } else if (m == GLView.LensMode.SLOW) {
             int[] f = {4, 6, 8, 10, 12};
             String[] labels = {"4×", "6×", "8×", "10×", "12×"};
             Runnable[] a = new Runnable[f.length];
@@ -1459,6 +1516,10 @@ public class MainActivity extends Activity {
             case REWIND: return MODE_REWIND;
             case RAMREV: return MODE_RAMREV;
             case CREV: return MODE_CREV;
+            case TAPE3: return MODE_CREV;
+            case REPLAY: return MODE_REWIND;
+            case MOLASSES: return MODE_SLOW;
+            case DOWNSHIFT: return MODE_REWIND;
             default: return MODE_REVERSE;
         }
     }
@@ -1541,6 +1602,13 @@ public class MainActivity extends Activity {
             time = formatSeconds(Math.round(1000.0f / Math.max(2.0f, hz)));
         }
 
+        boolean manual = isManualTapeMode();
+        boolean wobble = m == GLView.LensMode.TAPE3;
+        railTime.setVisibility(manual || wobble ? View.GONE : View.VISIBLE);
+        railParam.setVisibility((manual && m != GLView.LensMode.DOWNSHIFT) || wobble ||
+                m == GLView.LensMode.DUBBUF_REVERSE ? View.GONE : View.VISIBLE);
+        if (m == GLView.LensMode.DOWNSHIFT)
+            factor = downshiftFactor == 0.125f ? "1/8" : downshiftFactor == 0.5f ? "1/2" : "1/4";
         railView.setText(currentLensTitle().toUpperCase(Locale.US));
         railTime.setText(time.toUpperCase(Locale.US));
         railParam.setText(factor);
@@ -1750,6 +1818,8 @@ public class MainActivity extends Activity {
         /*
          * Controls first: diagnostics can no longer push them off-screen.
          */
+        // The mode rail is the single canonical mode picker.
+        lensRow.setVisibility(View.GONE);
         hudPanel.addView(lensRow);
         effectControlLabel = new TextView(this);
         effectControlLabel.setTextColor(0xffffffff);
@@ -1822,7 +1892,7 @@ public class MainActivity extends Activity {
         reverseLensButton.setOnClickListener(v ->
                 setLensMode(GLView.LensMode.FAST));
         dubBufReverseButton.setOnClickListener(v ->
-                setLensMode(GLView.LensMode.REVERSE3));
+                setLensMode(GLView.LensMode.DUBBUF_REVERSE));
 
         slowLensButton.setOnClickListener(v ->
                 setLensMode(GLView.LensMode.SLOW));
@@ -1946,15 +2016,14 @@ public class MainActivity extends Activity {
 
         running = true;
 
-        if (glView.getLensMode() == GLView.LensMode.TAPE3 || glView.getLensMode() == GLView.LensMode.REVERSE3) {
+        if (GLView.isTapeMode(glView.getLensMode())) {
             updateOverlay("Starting Tape3 1080p60 All-I");
             startTape3Session(() -> {
                 TraceLog.i("TAPE3 active 1080p60 All-I");
                 mainHandler.postDelayed(() -> {
                     if (tape3 != null &&
-                            glView.getLensMode() == GLView.LensMode.TAPE3 || glView.getLensMode() == GLView.LensMode.REVERSE3) {
-                        glView.showTape3Delay();
-                        TraceLog.i("TAPE3 DELAY display selected 1.000s");
+                            GLView.isTapeMode(glView.getLensMode())) {
+                        showTapeOutput();
                     }
                 }, 1500L);
                 hideSplashAfterFirstFrame();
@@ -2657,9 +2726,7 @@ public class MainActivity extends Activity {
             final int tape3CameraFps = 120;
             final Tape3 newTape3 =
                     new Tape3(1920, 1080, tape3CameraFps, 40000000, glView.getDecoderSurface(0));
-            newTape3.setLfoPeriodMs(lfoPeriodMs);
-            newTape3.setLfoAmountMs(lfoAmountMs);
-            newTape3.setReverse3(glView.getLensMode() == GLView.LensMode.REVERSE3);
+            configureTapeMode(newTape3);
             newTape3.setReverseDurationMs(reversePlaybackMs);
 
             newTape3.prepare();
@@ -2687,7 +2754,7 @@ public class MainActivity extends Activity {
                         @Override public void onConfigured(CameraCaptureSession s) {
                             try {
                                 if (tape3 != newTape3 ||
-                                        glView.getLensMode() != GLView.LensMode.TAPE3 && glView.getLensMode() != GLView.LensMode.REVERSE3) {
+                                        !GLView.isTapeMode(glView.getLensMode())) {
                                     try { s.close(); } catch (Exception ignored) {}
                                     newTape3.stopAndRelease();
                                     return;
@@ -4192,21 +4259,22 @@ public class MainActivity extends Activity {
             return;
         }
 
-        if (mode == GLView.LensMode.TAPE3 ||
-                mode == GLView.LensMode.REVERSE3) {
+        if (scrubPanel != null) scrubPanel.setVisibility(View.GONE);
+
+        if (GLView.isTapeMode(mode)) {
             if (tape3 != null &&
-                    (glView.getLensMode() == GLView.LensMode.TAPE3 ||
-                     glView.getLensMode() == GLView.LensMode.REVERSE3)) {
-                tape3.setReverse3(mode == GLView.LensMode.REVERSE3);
+                    (GLView.isTapeMode(glView.getLensMode()))) {
                 glView.setLensMode(mode);
-                glView.showTape3Delay();
+                configureTapeMode(tape3);
+                showTapeOutput();
                 updateControlButtons();
                 updateScrubUi();
-                updateOverlay(mode == GLView.LensMode.REVERSE3 ? "Reverse3" : "Delay");
+                updateOverlay(currentLensTitle());
                 return;
             }
             running = false;
             glView.setLensMode(mode);
+            if (isManualTapeMode()) glView.showRamLive();
             captureFps = 60;
             captureWidth = 1920;
             captureHeight = 1080;
@@ -4487,32 +4555,6 @@ public class MainActivity extends Activity {
             recordCueMs = 0;
             activeTestPreset = "SLOW_" + slowPlaybackMs + "MS_X" + slowFactor;
             updateOverlay("Slow Time " + (slowPlaybackMs / 1000.0f) + " s");
-        if (mode == GLView.LensMode.TAPE3 ||
-                mode == GLView.LensMode.REVERSE3) {
-            if (tape3 != null &&
-                    (glView.getLensMode() == GLView.LensMode.TAPE3 ||
-                     glView.getLensMode() == GLView.LensMode.REVERSE3)) {
-                tape3.setReverse3(mode == GLView.LensMode.REVERSE3);
-                glView.setLensMode(mode);
-                glView.showTape3Delay();
-                updateControlButtons();
-                updateScrubUi();
-                updateOverlay(mode == GLView.LensMode.REVERSE3 ? "Reverse3" : "Delay");
-                return;
-            }
-            running = false;
-            glView.setLensMode(mode);
-            captureFps = 60;
-            captureWidth = 1920;
-            captureHeight = 1080;
-            playbackFps = 60;
-            activeTestPreset = "TAPE3_1080P60";
-            updateControlButtons();
-            updateScrubUi();
-            scheduleCameraRecovery("Tape3 mode restart");
-            return;
-        }
-
         } else if (mode == GLView.LensMode.REVERSE3) {
             reversePlaybackMs = Math.max(500, Math.min(4000, durationMs));
             if (tape3 != null) tape3.setReverseDurationMs(reversePlaybackMs);
@@ -4660,7 +4702,10 @@ public class MainActivity extends Activity {
         if (glView.getLensMode() == GLView.LensMode.REWIND) return "Rewind";
         if (glView.getLensMode() == GLView.LensMode.RAMREV) return "RAMRev";
         if (glView.getLensMode() == GLView.LensMode.CREV) return "CRev";
-        if (glView.getLensMode() == GLView.LensMode.TAPE3) return "Live";
+        if (glView.getLensMode() == GLView.LensMode.TAPE3) return "Wobble";
+        if (glView.getLensMode() == GLView.LensMode.REPLAY) return "Replay";
+        if (glView.getLensMode() == GLView.LensMode.MOLASSES) return "Molasses";
+        if (glView.getLensMode() == GLView.LensMode.DOWNSHIFT) return "Downshift";
         return "Reverse";
     }
 
@@ -4759,10 +4804,11 @@ public class MainActivity extends Activity {
             boolean stutter = m == GLView.LensMode.STUTTER;
             boolean fast = m == GLView.LensMode.FAST;
             boolean strobe = m == GLView.LensMode.FREEZE;
+            effectControlLabel.setVisibility(isManualTapeMode() || m == GLView.LensMode.TAPE3 ? View.GONE : View.VISIBLE);
             effectControlLabel.setText(stutter ? "Time / Slices" :
                     fast ? "Time / Speed" :
                     slow ? "Time / Slowdown" : "Time");
-            timeControlRow.setVisibility(View.VISIBLE);
+            timeControlRow.setVisibility(isManualTapeMode() || m == GLView.LensMode.TAPE3 ? View.GONE : View.VISIBLE);
             slowControlRow.setVisibility(slow ? View.VISIBLE : View.GONE);
             stutterSlicesRow.setVisibility(stutter ? View.VISIBLE : View.GONE);
             fastSpeedRow.setVisibility(fast ? View.VISIBLE : View.GONE);
@@ -4938,9 +4984,11 @@ public class MainActivity extends Activity {
     void refreshOverlay() {
         runOnUiThread(() -> {
             if (overlay == null) return;
+            if (tape3 != null && isManualTapeMode() && tape3.isPlaybackLive())
+                glView.showRamLive();
 
             if (glView != null &&
-                    glView.getLensMode() == GLView.LensMode.TAPE3 || glView.getLensMode() == GLView.LensMode.REVERSE3) {
+                    GLView.isTapeMode(glView.getLensMode())) {
                 Tape3 t = tape3;
                 double sensorFps = tape3SensorFrameMs > 0.0
                         ? 1000.0 / tape3SensorFrameMs : 0.0;

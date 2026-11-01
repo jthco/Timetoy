@@ -226,7 +226,7 @@ public class GLRenderer implements GLSurfaceView.Renderer {
             decoderSurfaceTextures[slot].updateTexImage();
             TraceLog.i("DEEP GL updateTexImage END slot=" + slot);
             decoderSurfaceTextures[slot].getTransformMatrix(decoderSources[slot].matrix);
-            if (slot == 0 && view.getLensMode() == GLView.LensMode.TAPE3) {
+            if (slot == 0 && GLView.isTapeMode(view.getLensMode())) {
                 decoderSurfaceTextures[slot].getTransformMatrix(rawCameraMatrix);
                 android.opengl.Matrix.setIdentityM(cameraCorrectionMatrix, 0);
                 android.opengl.Matrix.translateM(cameraCorrectionMatrix, 0, 0.5f, 0.5f, 0f);
