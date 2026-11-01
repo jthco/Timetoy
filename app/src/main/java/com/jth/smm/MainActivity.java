@@ -346,9 +346,6 @@ public class MainActivity extends Activity {
                         long nowNs = System.nanoTime();
                         if (tape3AuditFirstNs == 0L) {
                             tape3AuditFirstNs = nowNs;
-                            if (frameDuration != null && frameDuration > CaptureTiming.frameNs(captureFps) * 1.1)
-                                TraceLog.i("FPS MISMATCH requested=" + captureFps + " sensor=" +
-                                        (1_000_000_000.0 / frameDuration) + " requestAE=" + aeRange);
                             tape3AuditLastLogNs = nowNs;
                             tape3AuditLastFrames = tape3AuditFrames;
                         } else if (nowNs - tape3AuditLastLogNs >= 5000000000L) {
@@ -363,6 +360,9 @@ public class MainActivity extends Activity {
                                     " fps=" + (deltaFrames / seconds) +
                                     " frameDurationMs=" + (frameDuration == null ? -1.0 : frameDuration / 1000000.0) +
                                     " requestedAE=" + aeRange);
+                            if (frameDuration != null && frameDuration > CaptureTiming.frameNs(captureFps) * 1.1)
+                                TraceLog.i("FPS MISMATCH requested=" + captureFps + " sensor=" +
+                                        (1_000_000_000.0 / frameDuration) + " requestAE=" + aeRange);
                             tape3AuditLastLogNs = nowNs;
                             tape3AuditLastFrames = tape3AuditFrames;
                         }
