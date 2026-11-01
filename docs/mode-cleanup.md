@@ -13,10 +13,9 @@ No AGENTS.md or other project instructions were present in the repository tree.
   They are not aliases or entries in the canonical picker. Reverse uses the existing
   chunked DUBBUF_REVERSE engine; its existing duration control remains. No new speed
   setting was added for Reverse.
-- Tape3 already implements variable delay plus a triangle-wave LFO. Wobble reuses
-  that contiguous engine and preserves its existing delay, period, and amount controls.
-  The proposed two-control redesign has not been assumed approved. Existing defaults
-  (including zero initial LFO amount) remain; increasing Amount engages modulation.
+- Wobble uses Tape3's contiguous delay and triangle-wave LFO. Its two rail popup
+  settings are Delay and Amount, with a fixed two-second period. Initial delay is
+  one second and initial amount is 250 ms. The former sliders are removed.
 - Replay and Molasses use Tape3 with fixed gesture speeds: Replay rewinds at 1x,
   Molasses advances at 1/4x while held, and both catch up at 3x after release. These
   defaults add no user-facing settings. Catch-up clamps to Live and history bounds.
@@ -48,7 +47,7 @@ on-device camera/rendering tests have not run: this workspace has no Android SDK
 or Gradle checkout. Keep the PR as a draft until the Android build and device
 verification pass.
 
-On device, check every picker transition, Wobble delay/LFO controls, manual press,
+On device, check every picker transition, Wobble Delay/Amount popups, manual press,
 release and catch-up, and Downshift hold/release/next tap at all factors. Repeat
 after leaving/re-entering the mode, camera recovery, orientation change, app pause,
 and history exhaustion. Verify legacy modes cannot be selected from visible UI.

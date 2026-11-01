@@ -134,9 +134,6 @@ public class GLView extends GLSurfaceView {
 
     public LensMode getLensMode() { return lensMode; }
 
-    public void setPortraitOrientation(boolean portrait) {
-        if (renderer != null) renderer.setPortraitOrientation(portrait);
-    }
     public void requestCameraRender() { requestRender(); }
     public Surface getDecoderSurface(int slot) { return renderer.getDecoderSurface(slot); }
 

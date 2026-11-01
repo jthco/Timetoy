@@ -92,13 +92,8 @@ public class MainActivity extends Activity {
     TextView effectControlLabel;
     LinearLayout timeControlRow, slowControlRow, stutterSlicesRow, freezeRateRow, fastSpeedRow;
     LinearLayout modeRail;
-    TextView railTT, railView, railTime, railParam, railFX, railShare;
+    TextView railTT, railView, railTime, railParam, railFX, railShare, railCamera;
     LinearLayout scrubPanel;
-    TextView scrubLeftLabel, scrubRightLabel, scrubPositionLabel;
-    SeekBar scrubSeek;
-    View delayDot;
-    SeekBar lfoPeriodSeek, lfoAmountSeek;
-    TextView lfoPeriodLabel, lfoAmountLabel;
     float downshiftFactor = 0.25f;
     boolean downshiftDelayed, downshiftResetGesture;
 
@@ -113,6 +108,7 @@ public class MainActivity extends Activity {
         tape.setReverse3(glView.getLensMode() == GLView.LensMode.REVERSE3);
         tape.setManualPlayback(isManualTapeMode());
         tape.setLfoPeriodMs(lfoPeriodMs);
+        if (glView.getLensMode() == GLView.LensMode.TAPE3) tape.setDelayMs(wobbleDelayMs);
         tape.setLfoAmountMs(glView.getLensMode() == GLView.LensMode.TAPE3 ? lfoAmountMs : 0L);
         downshiftDelayed = downshiftResetGesture = false;
     }
@@ -123,7 +119,7 @@ public class MainActivity extends Activity {
         else glView.showTape3Delay();
     }
 
-    long lfoPeriodMs = 2000L, lfoAmountMs = 0L;
+    long lfoPeriodMs = 2000L, lfoAmountMs = 250L, wobbleDelayMs = 1000L;
 
     Button slices2Button, slices4Button, slices6Button, slices8Button;
     Button fast1Button, fast15Button, fast2Button, fast3Button, fast4Button;
@@ -186,7 +182,12 @@ public class MainActivity extends Activity {
 
     int captureWidth = DEFAULT_WIDTH;
     int captureHeight = DEFAULT_HEIGHT;
-    int captureFps = REVERSE_CAPTURE_FPS;
+    int captureFps = DEFAULT_FPS;
+    int selectedCaptureFps = DEFAULT_FPS;
+    boolean captureHighSpeed, manualSensorAvailable;
+    boolean manualExposure = true;
+    long shutterNs = 8_333_333L;
+    int sensorIso = 400;
     int captureDurationMs = DEFAULT_RECORD_MS;
     int captureBitrate = 20_000_000;
     int recordCueMs = 0;
@@ -584,7 +585,6 @@ public class MainActivity extends Activity {
                     hudTicks++;
                     refreshOverlay();
                     updateScrubUi();
-                    if (delayDot != null) delayDot.invalidate();
 
                     hudHandler.postDelayed(
                             this,
@@ -651,11 +651,7 @@ public class MainActivity extends Activity {
 
         glView =
                 new GLView(this);
-        glView.setPortraitOrientation(
-                getResources().getConfiguration().orientation ==
-                        android.content.res.Configuration.ORIENTATION_PORTRAIT
-        );
-        captureFps = 60;
+        captureFps = selectedCaptureFps;
         captureWidth = 1920;
         captureHeight = 1080;
         playbackFps = 60;
@@ -675,7 +671,6 @@ public class MainActivity extends Activity {
         buildRecordProgress(root);
         buildHud(root);
         buildModeRail(root);
-        buildScrubControl(root);
         buildWatermark(root);
         buildFlashLabel(root);
         buildSplash(root);
@@ -1113,212 +1108,9 @@ public class MainActivity extends Activity {
         });
     }
 
-    void buildScrubControl(FrameLayout root) {
-        scrubPanel = new LinearLayout(this);
-        scrubPanel.setOrientation(LinearLayout.VERTICAL);
-        scrubPanel.setPadding(dp(12), dp(8), dp(12), dp(8));
-        scrubPanel.setBackgroundColor(0xaa000000);
-
-        LinearLayout labels = new LinearLayout(this);
-        labels.setOrientation(LinearLayout.HORIZONTAL);
-
-        scrubLeftLabel = new TextView(this);
-        scrubLeftLabel.setText("-0.0 s");
-        scrubLeftLabel.setTextColor(0xffffffff);
-        scrubLeftLabel.setTextSize(14);
-
-        scrubPositionLabel = new TextView(this);
-        scrubPositionLabel.setText("LIVE");
-        scrubPositionLabel.setTextColor(0xffcccccc);
-        scrubPositionLabel.setTextSize(13);
-        scrubPositionLabel.setGravity(Gravity.CENTER);
-
-        scrubRightLabel = new TextView(this);
-        scrubRightLabel.setText("30 s");
-        scrubRightLabel.setTextColor(0xffffffff);
-        scrubRightLabel.setTextSize(14);
-        scrubRightLabel.setGravity(Gravity.RIGHT);
-
-        labels.addView(scrubLeftLabel, new LinearLayout.LayoutParams(0, -2, 1f));
-        labels.addView(scrubPositionLabel, new LinearLayout.LayoutParams(0, -2, 1f));
-        labels.addView(scrubRightLabel, new LinearLayout.LayoutParams(0, -2, 1f));
-
-        scrubSeek = new SeekBar(this);
-        scrubSeek.setMax(1000);
-        scrubSeek.setProgress(33);
-        scrubSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override public void onStartTrackingTouch(SeekBar seekBar) { ramScrubbing = true; }
-
-            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                if (glView != null &&
-                        GLView.isTapeMode(glView.getLensMode())) {
-                    long delayMs = progress * 30L;
-                    if (tape3 != null) tape3.setDelayMs(delayMs);
-                    scrubPositionLabel.setText(
-                            String.format(Locale.US, "Delay %.2f s", delayMs / 1000.0));
-                    return;
-                }
-
-                if (!fromUser || ramBuffer == null) return;
-                double history = ramBuffer.getHistorySeconds();
-                long offsetMs = -Math.round(history * 1000.0 * (1000 - progress) / 1000.0);
-                ramSelectedOffsetMs = offsetMs;
-
-                if (progress >= 999) {
-                    scrubPositionLabel.setText("LIVE");
-                    if (glView != null) glView.showRamLive();
-                } else {
-                    scrubPositionLabel.setText(
-                            String.format(Locale.US, "%.1f s", offsetMs / 1000.0));
-                    if (glView != null) glView.showRamOffsetMs(offsetMs);
-                }
-            }
-
-            @Override public void onStopTrackingTouch(SeekBar seekBar) { ramScrubbing = false; }
-        });
-
-        scrubPanel.addView(labels);
-        LinearLayout delayRow = new LinearLayout(this);
-        delayRow.setOrientation(LinearLayout.HORIZONTAL);
-        delayRow.setGravity(Gravity.CENTER_VERTICAL);
-
-        Button minus = new Button(this);
-        minus.setText("−");
-        installDelayRocker(minus, -10);
-
-        Button plus = new Button(this);
-        plus.setText("+");
-        installDelayRocker(plus, +10);
-
-        delayRow.addView(minus, new LinearLayout.LayoutParams(dp(48), dp(48)));
-        FrameLayout delayTrack = new FrameLayout(this);
-        delayTrack.addView(scrubSeek, new FrameLayout.LayoutParams(-1, -2));
-        delayDot = new View(this) {
-            final android.graphics.Paint paint = new android.graphics.Paint(3);
-            @Override protected void onDraw(android.graphics.Canvas canvas) {
-                super.onDraw(canvas);
-                if (tape3 == null || glView == null ||
-                        glView.getLensMode() != GLView.LensMode.TAPE3) return;
-                float fraction = Math.min(1f,
-                        tape3.getEffectiveDelayMs() / 30000f);
-                float left = scrubSeek.getPaddingLeft();
-                float right = getWidth() - scrubSeek.getPaddingRight();
-                float x = left + fraction * (right - left);
-                paint.setColor(0xffff7a1a);
-                canvas.drawCircle(x, getHeight() / 2f, dp(4), paint);
-            }
-        };
-        delayTrack.addView(delayDot, new FrameLayout.LayoutParams(-1, -1));
-        delayRow.addView(delayTrack, new LinearLayout.LayoutParams(0, dp(48), 1f));
-        delayRow.addView(plus, new LinearLayout.LayoutParams(dp(48), dp(48)));
-        scrubPanel.addView(delayRow);
-
-        LinearLayout lfoRow = new LinearLayout(this);
-        lfoRow.setOrientation(LinearLayout.HORIZONTAL);
-
-        LinearLayout periodColumn = new LinearLayout(this);
-        periodColumn.setOrientation(LinearLayout.VERTICAL);
-        lfoPeriodLabel = new TextView(this);
-        lfoPeriodLabel.setTextColor(0xffffffff);
-        lfoPeriodLabel.setText("Period 2.0 s");
-        lfoPeriodSeek = new SeekBar(this);
-        lfoPeriodSeek.setMax(450);
-        lfoPeriodSeek.setProgress(150);
-        lfoPeriodSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            public void onStartTrackingTouch(SeekBar s) {}
-            public void onStopTrackingTouch(SeekBar s) {}
-            public void onProgressChanged(SeekBar s, int p, boolean user) {
-                lfoPeriodMs = 500L + p * 10L;
-                lfoPeriodLabel.setText(String.format(Locale.US,
-                        "Period %.1f s", lfoPeriodMs / 1000.0));
-                if (tape3 != null) tape3.setLfoPeriodMs(lfoPeriodMs);
-            }
-        });
-        periodColumn.addView(lfoPeriodLabel);
-        periodColumn.addView(lfoPeriodSeek);
-
-        LinearLayout amountColumn = new LinearLayout(this);
-        amountColumn.setOrientation(LinearLayout.VERTICAL);
-        lfoAmountLabel = new TextView(this);
-        lfoAmountLabel.setTextColor(0xffffffff);
-        lfoAmountLabel.setText("Amount 0.0 s");
-        lfoAmountSeek = new SeekBar(this);
-        lfoAmountSeek.setMax(100);
-        lfoAmountSeek.setProgress(0);
-        lfoAmountSeek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            public void onStartTrackingTouch(SeekBar s) {}
-            public void onStopTrackingTouch(SeekBar s) {}
-            public void onProgressChanged(SeekBar s, int p, boolean user) {
-                lfoAmountMs = p * 100L;
-                lfoAmountLabel.setText(String.format(Locale.US,
-                        "Amount %.1f s", lfoAmountMs / 1000.0));
-                if (tape3 != null) tape3.setLfoAmountMs(lfoAmountMs);
-            }
-        });
-        amountColumn.addView(lfoAmountLabel);
-        amountColumn.addView(lfoAmountSeek);
-
-        lfoRow.addView(periodColumn, new LinearLayout.LayoutParams(0, -2, 1f));
-        lfoRow.addView(amountColumn, new LinearLayout.LayoutParams(0, -2, 1f));
-        scrubPanel.addView(lfoRow);
-
-
-        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
-                -1, -2, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-        lp.setMargins(dp(16), 0, dp(16), dp(18));
-        root.addView(scrubPanel, lp);
-        scrubPanel.setVisibility(View.GONE);
-    }
-
-    void installDelayRocker(Button button, int step) {
-        final Runnable[] repeat = new Runnable[1];
-        repeat[0] = new Runnable() {
-            @Override public void run() {
-                if (scrubSeek != null) {
-                    int p = scrubSeek.getProgress();
-                    scrubSeek.setProgress(Math.max(0, Math.min(1000, p + step)));
-                }
-                mainHandler.postDelayed(this, 50);
-            }
-        };
-        button.setOnTouchListener((v, event) -> {
-            switch (event.getActionMasked()) {
-                case MotionEvent.ACTION_DOWN:
-                    mainHandler.removeCallbacks(repeat[0]);
-                    if (scrubSeek != null) {
-                        int p = scrubSeek.getProgress();
-                        scrubSeek.setProgress(Math.max(0, Math.min(1000, p + step)));
-                    }
-                    mainHandler.postDelayed(repeat[0], 300);
-                    return true;
-                case MotionEvent.ACTION_UP:
-                case MotionEvent.ACTION_CANCEL:
-                    mainHandler.removeCallbacks(repeat[0]);
-                    return true;
-            }
-            return true;
-        });
-    }
-
     void updateScrubUi() {
-        if (scrubPanel == null) return;
-        boolean active = glView != null && (glView.getLensMode() == GLView.LensMode.SCRUB || glView.getLensMode() == GLView.LensMode.TAPE3);
-        scrubPanel.setVisibility(active ? View.VISIBLE : View.GONE);
-        if (!active) return;
-        if (GLView.isTapeMode(glView.getLensMode())) {
-            scrubLeftLabel.setText("0 s");
-            scrubRightLabel.setText("30 s");
-            if (!ramScrubbing && tape3 != null)
-                scrubPositionLabel.setText(String.format(
-                        Locale.US, "Delay %.2f s", tape3.getDelayMs() / 1000.0));
-            return;
-        }
-
-
-        double history = ramBuffer == null ? 0.0 : ramBuffer.getHistorySeconds();
-        scrubLeftLabel.setText(String.format(Locale.US, "-%.1f s", history));
-        scrubRightLabel.setText("30 s");
-        if (!ramScrubbing && scrubSeek.getProgress() >= 999) scrubPositionLabel.setText("LIVE");
+        // Legacy scrub modes are not exposed. Wobble uses the rail popups.
+        if (scrubPanel != null) scrubPanel.setVisibility(View.GONE);
     }
 
     void buildModeRail(FrameLayout root) {
@@ -1334,6 +1126,7 @@ public class MainActivity extends Activity {
         railParam = makeRailText("—");
         railFX = makeRailText("FX");
         railShare = makeRailText("SHARE");
+        railCamera = makeRailText("CAM 60");
 
         modeRail.addView(railTT);
         modeRail.addView(railView);
@@ -1341,6 +1134,7 @@ public class MainActivity extends Activity {
         modeRail.addView(railParam);
         modeRail.addView(railFX);
         modeRail.addView(railShare);
+        modeRail.addView(railCamera);
 
         railTT.setOnClickListener(v ->
                 new android.app.AlertDialog.Builder(this)
@@ -1349,6 +1143,7 @@ public class MainActivity extends Activity {
                         .setPositiveButton("OK", null)
                         .show());
 
+        railCamera.setOnClickListener(v -> showCameraChoices(railCamera));
         railView.setOnClickListener(v -> showModeChoices(railView));
         railTime.setOnClickListener(v -> showTimeChoices(railTime));
         railParam.setOnClickListener(v -> showFactorChoices(railParam));
@@ -1423,7 +1218,21 @@ public class MainActivity extends Activity {
 
     void showTimeChoices(View anchor) {
         GLView.LensMode m = glView.getLensMode();
-        if (m == GLView.LensMode.SLOW) {
+        if (m == GLView.LensMode.TAPE3) {
+            long[] values = {0, 250, 500, 1000, 2000, 4000};
+            Runnable[] actions = new Runnable[values.length];
+            String[] labels = new String[values.length];
+            for (int i = 0; i < values.length; i++) {
+                final long value = values[i];
+                labels[i] = String.format(Locale.US, "Delay %.3f s", value / 1000.0);
+                actions[i] = () -> {
+                    wobbleDelayMs = value;
+                    if (tape3 != null) tape3.setDelayMs(value);
+                    updateModeRail();
+                };
+            }
+            showChoicePopup(anchor, labels, actions);
+        } else if (m == GLView.LensMode.SLOW) {
             int[] ms = {500, 1000, 2000, 3000, 4000};
             String[] labels = {"0.5 S", "1.0 S", "2.0 S", "3.0 S", "4.0 S"};
             Runnable[] a = new Runnable[ms.length];
@@ -1460,7 +1269,21 @@ public class MainActivity extends Activity {
 
     void showFactorChoices(View anchor) {
         GLView.LensMode m = glView.getLensMode();
-        if (m == GLView.LensMode.DOWNSHIFT) {
+        if (m == GLView.LensMode.TAPE3) {
+            long[] values = {0, 125, 250, 500, 1000, 2000};
+            Runnable[] actions = new Runnable[values.length];
+            String[] labels = new String[values.length];
+            for (int i = 0; i < values.length; i++) {
+                final long value = values[i];
+                labels[i] = "Amount " + String.format(Locale.US, "%.3f s", value / 1000.0);
+                actions[i] = () -> {
+                    lfoAmountMs = value;
+                    if (tape3 != null) tape3.setLfoAmountMs(value);
+                    updateModeRail();
+                };
+            }
+            showChoicePopup(anchor, labels, actions);
+        } else if (m == GLView.LensMode.DOWNSHIFT) {
             float[] factors = {0.125f, 0.25f, 0.5f};
             Runnable[] actions = new Runnable[factors.length];
             for (int i = 0; i < factors.length; i++) {
@@ -1497,6 +1320,107 @@ public class MainActivity extends Activity {
         }
     }
 
+    void applyCaptureControls(CaptureRequest.Builder request, boolean highSpeed) throws Exception {
+        CameraCharacteristics c = cameraManager.getCameraCharacteristics(cameraDevice.getId());
+        boolean manual = manualExposure && !highSpeed && hasManualSensor(c);
+        request.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
+        request.set(CaptureRequest.CONTROL_AE_MODE, manual
+                ? CaptureRequest.CONTROL_AE_MODE_OFF : CaptureRequest.CONTROL_AE_MODE_ON);
+        if (!manual) {
+            // Never ask for a variable range that can trade cadence for brightness.
+            request.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, new Range<Integer>(captureFps, captureFps));
+        } else {
+            Range<Long> exposureRange = c.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE);
+            Range<Integer> isoRange = c.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE);
+            if (exposureRange == null || isoRange == null)
+                throw new IllegalStateException("Manual sensor limits unavailable");
+            long exposure = CaptureTiming.exposureNs(shutterNs, captureFps,
+                    exposureRange.getLower(), exposureRange.getUpper());
+            int iso = Math.max(isoRange.getLower(), Math.min(isoRange.getUpper(), sensorIso));
+            request.set(CaptureRequest.SENSOR_FRAME_DURATION, CaptureTiming.frameNs(captureFps));
+            request.set(CaptureRequest.SENSOR_EXPOSURE_TIME, exposure);
+            request.set(CaptureRequest.SENSOR_SENSITIVITY, iso);
+            shutterNs = exposure;
+            sensorIso = iso;
+            TraceLog.i("Manual sensor FPS=" + captureFps + " exposureNs=" + exposure + " ISO=" + iso);
+        }
+    }
+
+    void showCameraChoices(View anchor) {
+        String exposure = captureHighSpeed ? "Exposure: Auto (HS)" :
+                !manualSensorAvailable ? "Exposure: Auto (camera limit)" :
+                manualExposure ? "Exposure: Manual" : "Exposure: Auto";
+        showChoicePopup(anchor,
+                new String[]{"FPS: " + captureFps, exposure, "Shutter", "ISO: " + sensorIso, "Resolution"},
+                new Runnable[]{
+                        () -> showChoicePopup(anchor, new String[]{"60 FPS", "120 FPS (HS: Auto)"},
+                                new Runnable[]{() -> setCaptureFps(60), () -> setCaptureFps(120)}),
+                        () -> showChoicePopup(anchor, new String[]{"Manual exposure", "Auto exposure"},
+                                new Runnable[]{() -> setExposureMode(true), () -> setExposureMode(false)}),
+                        () -> showShutterChoices(anchor),
+                        () -> showIsoChoices(anchor),
+                        () -> showChoicePopup(anchor, new String[]{"1080p", "720p"},
+                                new Runnable[]{() -> setCaptureResolution(1920, 1080), () -> setCaptureResolution(1280, 720)})
+                });
+    }
+
+    boolean canSetManualExposure() {
+        if (cameraDevice == null) { flashStatus("Camera is not ready; choose FPS or resolution first.", 2500); return false; }
+        if (captureHighSpeed || !manualSensorAvailable) {
+            flashStatus(captureHighSpeed ? "High-speed capture forces Auto exposure. Try 60 FPS for manual control." :
+                    "This camera does not advertise manual sensor control.", 3500);
+            return false;
+        }
+        return true;
+    }
+
+    void setExposureMode(boolean manual) {
+        if (manual && !canSetManualExposure()) return;
+        boolean previous = manualExposure;
+        manualExposure = manual;
+        try {
+            if (cameraManager != null) selectCaptureCamera(captureWidth, captureHeight, captureFps, false);
+        } catch (Exception e) { manualExposure = previous; flashStatus(e.getMessage(), 3500); return; }
+        restartForCaptureOptions(manual ? "Manual exposure" : "Auto exposure");
+    }
+
+    void showShutterChoices(View anchor) {
+        if (!canSetManualExposure()) return;
+        int[] denominators = {60, 120, 240, 500, 1000, 2000};
+        List<String> labels = new ArrayList<>();
+        List<Runnable> actions = new ArrayList<>();
+        try {
+            CameraCharacteristics c = cameraManager.getCameraCharacteristics(cameraDevice.getId());
+            Range<Long> range = c.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE);
+            for (int denominator : denominators) {
+                final long ns = 1_000_000_000L / denominator;
+                if (denominator < captureFps || range == null || !range.contains(ns)) continue;
+                labels.add("1/" + denominator + " s");
+                actions.add(() -> { shutterNs = ns; setExposureMode(true); });
+            }
+        } catch (Exception e) { flashStatus("Camera is restarting; try again.", 1800); return; }
+        if (labels.isEmpty()) { flashStatus("No listed shutters fit this camera and FPS.", 2500); return; }
+        showChoicePopup(anchor, labels.toArray(new String[0]), actions.toArray(new Runnable[0]));
+    }
+
+    void showIsoChoices(View anchor) {
+        if (!canSetManualExposure()) return;
+        int[] values = {100, 200, 400, 800, 1600, 3200};
+        List<String> labels = new ArrayList<>();
+        List<Runnable> actions = new ArrayList<>();
+        try {
+            CameraCharacteristics c = cameraManager.getCameraCharacteristics(cameraDevice.getId());
+            Range<Integer> range = c.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE);
+            for (int value : values) {
+                if (range == null || !range.contains(value)) continue;
+                labels.add("ISO " + value);
+                actions.add(() -> { sensorIso = value; setExposureMode(true); });
+            }
+        } catch (Exception e) { flashStatus("Camera is restarting; try again.", 1800); return; }
+        if (labels.isEmpty()) { flashStatus("No listed ISO values fit this camera.", 2500); return; }
+        showChoicePopup(anchor, labels.toArray(new String[0]), actions.toArray(new Runnable[0]));
+    }
+
     void showFxChoices(View anchor) {
         Runnable stub = () -> flashStatus("FX — coming later", 900);
         showChoicePopup(anchor,
@@ -1526,7 +1450,7 @@ public class MainActivity extends Activity {
 
     void applyModeColor() {
         int c = modeColor();
-        TextView[] rack = {railTT, railView, railTime, railParam, railFX, railShare};
+        TextView[] rack = {railTT, railView, railTime, railParam, railFX, railShare, railCamera};
         for (TextView v : rack) {
             if (v != null) {
                 v.setBackgroundColor(c);
@@ -1604,16 +1528,18 @@ public class MainActivity extends Activity {
 
         boolean manual = isManualTapeMode();
         boolean wobble = m == GLView.LensMode.TAPE3;
-        railTime.setVisibility(manual || wobble ? View.GONE : View.VISIBLE);
-        railParam.setVisibility((manual && m != GLView.LensMode.DOWNSHIFT) || wobble ||
+        railTime.setVisibility(manual ? View.GONE : View.VISIBLE);
+        railParam.setVisibility((manual && m != GLView.LensMode.DOWNSHIFT) ||
                 m == GLView.LensMode.DUBBUF_REVERSE ? View.GONE : View.VISIBLE);
         if (m == GLView.LensMode.DOWNSHIFT)
             factor = downshiftFactor == 0.125f ? "1/8" : downshiftFactor == 0.5f ? "1/2" : "1/4";
         railView.setText(currentLensTitle().toUpperCase(Locale.US));
-        railTime.setText(time.toUpperCase(Locale.US));
+        railTime.setText(wobble ? String.format(Locale.US, "DELAY %.3f s", wobbleDelayMs / 1000.0) : time.toUpperCase(Locale.US));
+        if (wobble) factor = "AMOUNT " + String.format(Locale.US, "%.3f s", lfoAmountMs / 1000.0);
         railParam.setText(factor);
         railFX.setText("FX");
         railShare.setText("SHARE");
+        railCamera.setText("CAM " + captureFps + (captureHighSpeed || !manualSensorAvailable || !manualExposure ? " A" : " M"));
         applyModeColor();
     }
 
@@ -2017,9 +1943,9 @@ public class MainActivity extends Activity {
         running = true;
 
         if (GLView.isTapeMode(glView.getLensMode())) {
-            updateOverlay("Starting Tape3 1080p60 All-I");
+            updateOverlay("Starting Tape3 " + captureFps + " FPS All-I");
             startTape3Session(() -> {
-                TraceLog.i("TAPE3 active 1080p60 All-I");
+                TraceLog.i("TAPE3 active requested FPS=" + captureFps);
                 mainHandler.postDelayed(() -> {
                     if (tape3 != null &&
                             GLView.isTapeMode(glView.getLensMode())) {
@@ -2721,11 +2647,10 @@ public class MainActivity extends Activity {
         }
 
         try {
-            // First prove Samsungs constrained high-speed path at 1080p120.
-            // Once proven, Tape3 can decide how best to produce its 60 fps tape.
-            final int tape3CameraFps = 120;
+            final int tape3CameraFps = captureFps;
+            final boolean highSpeed = captureHighSpeed;
             final Tape3 newTape3 =
-                    new Tape3(1920, 1080, tape3CameraFps, 40000000, glView.getDecoderSurface(0));
+                    new Tape3(captureWidth, captureHeight, tape3CameraFps, captureBitrate, glView.getDecoderSurface(0));
             configureTapeMode(newTape3);
             newTape3.setReverseDurationMs(reversePlaybackMs);
 
@@ -2746,11 +2671,7 @@ public class MainActivity extends Activity {
             surfaces.add(previewSurface);
             surfaces.add(newTape3.getInputSurface());
 
-            TraceLog.i("TAPE3 HS requesting constrained 1920x1080@120 preview+AVC");
-
-            cameraDevice.createConstrainedHighSpeedCaptureSession(
-                    surfaces,
-                    new CameraCaptureSession.StateCallback() {
+            CameraCaptureSession.StateCallback callback = new CameraCaptureSession.StateCallback() {
                         @Override public void onConfigured(CameraCaptureSession s) {
                             try {
                                 if (tape3 != newTape3 ||
@@ -2760,8 +2681,6 @@ public class MainActivity extends Activity {
                                     return;
                                 }
 
-                                CameraConstrainedHighSpeedCaptureSession hs =
-                                        (CameraConstrainedHighSpeedCaptureSession) s;
                                 session = s;
                                 recordingSessionConfigured = false;
 
@@ -2770,45 +2689,36 @@ public class MainActivity extends Activity {
                                                 CameraDevice.TEMPLATE_RECORD);
                                 b.addTarget(previewSurface);
                                 b.addTarget(newTape3.getInputSurface());
-                                b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
-                                        new Range<Integer>(30, 120));
-                                b.set(CaptureRequest.CONTROL_MODE,
-                                        CaptureRequest.CONTROL_MODE_AUTO);
-                                b.set(CaptureRequest.CONTROL_AE_MODE,
-                                        CaptureRequest.CONTROL_AE_MODE_ON);
+                                applyCaptureControls(b, highSpeed);
                                 applyCameraZoom(b, cameraZoom);
-
-                                List<CaptureRequest> burst =
-                                        hs.createHighSpeedRequestList(b.build());
-
                                 newTape3.start();
-                                hs.setRepeatingBurst(
-                                        burst,
-                                        frameAuditCaptureCallback,
-                                        cameraHandler);
-
-                                TraceLog.i(
-                                        "TAPE3 HS active 1920x1080@120 burstRequests=" +
-                                        burst.size() + " targets=preview+AVC");
+                                if (highSpeed) {
+                                    CameraConstrainedHighSpeedCaptureSession hs = (CameraConstrainedHighSpeedCaptureSession) s;
+                                    hs.setRepeatingBurst(hs.createHighSpeedRequestList(b.build()), frameAuditCaptureCallback, cameraHandler);
+                                } else s.setRepeatingRequest(b.build(), frameAuditCaptureCallback, cameraHandler);
+                                TraceLog.i("TAPE3 requested fixed FPS=" + captureFps + " highSpeed=" + highSpeed);
                                 if (onReady != null) mainHandler.post(onReady);
                             } catch (Exception e) {
-                                TraceLog.e("TAPE3 HS session configure error", e);
+                                updateOverlay("Tape3 settings failed: " + e.getMessage());
+                                if (tape3 == newTape3) tape3 = null;
+                                newTape3.stopAndRelease();
+                                TraceLog.e("TAPE3 session configure error", e);
                             }
                         }
 
                         @Override public void onConfigureFailed(CameraCaptureSession s) {
-                            TraceLog.i("TAPE3 HS camera session failed");
+                            TraceLog.i("TAPE3 camera session failed");
                             updateOverlay(
-                                    "Tape3 1080p120 high-speed stream combination failed");
+                                    "Selected Tape3 camera stream failed. Try 60 fps or 720p.");
                             if (tape3 == newTape3) tape3 = null;
                             newTape3.stopAndRelease();
                         }
-                    },
-                    cameraHandler
-            );
+                    };
+            if (highSpeed) cameraDevice.createConstrainedHighSpeedCaptureSession(surfaces, callback, cameraHandler);
+            else cameraDevice.createCaptureSession(surfaces, callback, cameraHandler);
         } catch (Exception e) {
-            TraceLog.e("startTape3Session HS failed", e);
-            updateOverlay("Tape3 high-speed start failed: " + e);
+            TraceLog.e("startTape3Session failed", e);
+            updateOverlay("Tape3 start failed: " + e);
             if (tape3 != null) {
                 tape3.stopAndRelease();
                 tape3 = null;
@@ -2933,29 +2843,35 @@ public class MainActivity extends Activity {
     }
 
     void startPreviewOnlySession(Runnable onReady) {
-        if (cameraDevice == null || previewSurface == null) { if (onReady != null) onReady.run(); return; }
+        if (cameraDevice == null || previewSurface == null) return;
         try {
-            if (session != null) { try { session.close(); } catch (Exception ignored) {} session = null; }
-            cameraDevice.createCaptureSession(Collections.singletonList(previewSurface),
-                    new CameraCaptureSession.StateCallback() {
-                        @Override public void onConfigured(CameraCaptureSession s) {
-                            try {
-                                session = s; recordingSessionConfigured = false;
-                                CaptureRequest.Builder b = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
-                                b.addTarget(previewSurface);
-                                b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, new Range<Integer>(60, 60));
-                                b.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
-                                applyCameraZoom(b, cameraZoom);
-                                s.setRepeatingRequest(b.build(), null, cameraHandler);
-                                TraceLog.i("preview-only 60 fps session active");
-                                if (onReady != null) mainHandler.post(onReady);
-                            } catch (Exception e) { TraceLog.e("preview-only configure error", e); }
-                        }
-                        @Override public void onConfigureFailed(CameraCaptureSession s) {
-                            TraceLog.i("preview-only session failed");
-                        }
-                    }, cameraHandler);
-        } catch (Exception e) { TraceLog.e("startPreviewOnlySession failed", e); }
+            if (session != null) { session.close(); session = null; }
+            final boolean highSpeed = captureHighSpeed;
+            CameraCaptureSession.StateCallback callback = new CameraCaptureSession.StateCallback() {
+                @Override public void onConfigured(CameraCaptureSession s) {
+                    try {
+                        if (cameraDevice == null || appPaused) { s.close(); return; }
+                        session = s;
+                        recordingSessionConfigured = false;
+                        CaptureRequest.Builder b = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
+                        b.addTarget(previewSurface);
+                        applyCaptureControls(b, highSpeed);
+                        applyCameraZoom(b, cameraZoom);
+                        if (highSpeed) {
+                            CameraConstrainedHighSpeedCaptureSession hs = (CameraConstrainedHighSpeedCaptureSession) s;
+                            hs.setRepeatingBurst(hs.createHighSpeedRequestList(b.build()), frameAuditCaptureCallback, cameraHandler);
+                        } else s.setRepeatingRequest(b.build(), frameAuditCaptureCallback, cameraHandler);
+                        if (onReady != null) mainHandler.post(onReady);
+                    } catch (Exception e) { updateOverlay("Camera settings failed: " + e.getMessage()); TraceLog.e("Preview settings", e); }
+                }
+                @Override public void onConfigureFailed(CameraCaptureSession s) {
+                    updateOverlay("Selected camera stream is unsupported. Try 60 fps or 720p.");
+                }
+            };
+            List<Surface> surfaces = Collections.singletonList(previewSurface);
+            if (highSpeed) cameraDevice.createConstrainedHighSpeedCaptureSession(surfaces, callback, cameraHandler);
+            else cameraDevice.createCaptureSession(surfaces, callback, cameraHandler);
+        } catch (Exception e) { updateOverlay("Preview failed: " + e.getMessage()); TraceLog.e("Preview session", e); }
     }
 
     void recordClip(
@@ -3114,7 +3030,7 @@ public class MainActivity extends Activity {
         surfaces.add(previewSurface);
         surfaces.add(encoderSurface);
 
-        final boolean highSpeed = captureFps > 60;
+        final boolean highSpeed = captureHighSpeed;
 
         updateOverlay(highSpeed
                 ? "Creating persistent high-speed session"
@@ -3162,18 +3078,7 @@ public class MainActivity extends Activity {
 
                     builder.addTarget(previewSurface);
                     builder.addTarget(encoderSurface);
-                    builder.set(
-                            CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
-                            new Range<Integer>(captureFps, captureFps)
-                    );
-                    builder.set(
-                            CaptureRequest.CONTROL_MODE,
-                            CaptureRequest.CONTROL_MODE_AUTO
-                    );
-                    builder.set(
-                            CaptureRequest.CONTROL_AE_MODE,
-                            CaptureRequest.CONTROL_AE_MODE_ON
-                    );
+                    applyCaptureControls(builder, highSpeed);
                     applyCameraZoom(builder, cameraZoom);
 
                     CaptureRequest request = builder.build();
@@ -3486,7 +3391,7 @@ public class MainActivity extends Activity {
                     if (!slowExtractor.advance()) break;
                 }
                 long spanUs = firstUs >= 0 && lastUs >= firstUs ? lastUs - firstUs : -1L;
-                int expectedFrames = Math.max(1, effectiveRecordDurationMs() * SLOW_CAPTURE_FPS / 1000);
+                int expectedFrames = Math.max(1, effectiveRecordDurationMs() * captureFps / 1000);
                 int minFrames = Math.max(1, expectedFrames * 85 / 100);
                 long minSpanUs = Math.max(1L, effectiveRecordDurationMs() * 1000L * 85L / 100L);
                 boolean valid = frames >= minFrames && spanUs >= minSpanUs;
@@ -3730,8 +3635,8 @@ public class MainActivity extends Activity {
         try {
             logHighSpeedCapabilities();
 
-            String cameraId =
-                    findCaptureCamera();
+            if (cameraTexture != null) cameraTexture.setDefaultBufferSize(captureWidth, captureHeight);
+            String cameraId = findCaptureCamera();
 
             updateOverlay(
                     "Opening camera " +
@@ -3761,6 +3666,11 @@ public class MainActivity extends Activity {
                             }
                             cameraDevice = device;
                             cameraOpenState = CameraOpenState.OPEN;
+                            mainHandler.post(() -> {
+                                updateControlButtons();
+                                if (captureHighSpeed && manualExposure)
+                                    flashStatus("High-speed capture uses Auto exposure; 60 FPS supports manual settings when available.", 3500);
+                            });
 
                             if (diagnostics != null) {
                                 diagnostics.cameraOpened(openedCameraId);
@@ -3921,122 +3831,54 @@ public class MainActivity extends Activity {
         }
     }
 
-    String findCaptureCamera()
-            throws Exception {
+    boolean hasManualSensor(CameraCharacteristics c) {
+        int[] capabilities = c.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES);
+        if (capabilities != null) for (int value : capabilities)
+            if (value == CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR) return true;
+        return false;
+    }
 
-        Size wantedSize =
-                new Size(
-                        captureWidth,
-                        captureHeight
-                );
+    boolean supportsNormalFps(CameraCharacteristics c, StreamConfigurationMap map,
+                              Size size, int fps) {
+        if (!containsSize(map.getOutputSizes(SurfaceTexture.class), size) ||
+                !containsSize(map.getOutputSizes(MediaCodec.class), size)) return false;
+        long previewNs = map.getOutputMinFrameDuration(SurfaceTexture.class, size);
+        long encoderNs = map.getOutputMinFrameDuration(MediaCodec.class, size);
+        long frameNs = CaptureTiming.frameNs(fps);
+        if (previewNs > frameNs + 1000L || encoderNs > frameNs + 1000L) return false;
+        Range<Integer>[] ranges = c.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
+        if (ranges != null) for (Range<Integer> range : ranges)
+            if (range.getLower() == fps && range.getUpper() == fps) return true;
+        // AE-off capture can use a frame duration absent from the AE ranges, only
+        // when both output streams explicitly advertise the required cadence.
+        return manualExposure && hasManualSensor(c) && previewNs > 0 && encoderNs > 0;
+    }
 
-        boolean highSpeed =
-                captureFps > 60;
-
-        for (String id :
-                cameraManager
-                        .getCameraIdList()) {
-
-            CameraCharacteristics characteristics =
-                    cameraManager
-                            .getCameraCharacteristics(
-                                    id
-                            );
-
-            StreamConfigurationMap map =
-                    characteristics.get(
-                            CameraCharacteristics
-                                    .SCALER_STREAM_CONFIGURATION_MAP
-                    );
-
-            if (map == null) {
-                continue;
+    String selectCaptureCamera(int width, int height, int fps, boolean apply) throws Exception {
+        Size size = new Size(width, height);
+        for (String id : cameraManager.getCameraIdList()) {
+            CameraCharacteristics c = cameraManager.getCameraCharacteristics(id);
+            StreamConfigurationMap map = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
+            if (map == null) continue;
+            boolean normal = supportsNormalFps(c, map, size, fps);
+            boolean highSpeed = false;
+            if (!normal && containsSize(map.getHighSpeedVideoSizes(), size)) {
+                Range<Integer>[] ranges = map.getHighSpeedVideoFpsRangesFor(size);
+                if (ranges != null) for (Range<Integer> range : ranges)
+                    if (range.getLower() == fps && range.getUpper() == fps) highSpeed = true;
             }
-
-            if (!highSpeed) {
-                boolean previewSupported =
-                        containsSize(
-                                map.getOutputSizes(
-                                        SurfaceTexture.class
-                                ),
-                                wantedSize
-                        );
-
-                boolean encoderSupported =
-                        containsSize(
-                                map.getOutputSizes(
-                                        MediaCodec.class
-                                ),
-                                wantedSize
-                        );
-
-                boolean ramSupported = glView == null ||
-                        (glView.getLensMode() != GLView.LensMode.SCRUB &&
-                         glView.getLensMode() != GLView.LensMode.REWIND &&
-                         glView.getLensMode() != GLView.LensMode.RAMREV &&
-                         glView.getLensMode() != GLView.LensMode.CREV) ||
-                        containsSize(map.getOutputSizes(ImageFormat.YUV_420_888), wantedSize);
-
-                if (previewSupported &&
-                        encoderSupported && ramSupported) {
-                    TraceLog.i(
-                            "Normal capture camera=" +
-                                    id +
-                                    " size=" +
-                                    captureWidth +
-                                    "x" +
-                                    captureHeight +
-                                    " fps=" +
-                                    captureFps
-                    );
-
-                    return id;
-                }
-
-                continue;
+            if (!normal && !highSpeed) continue;
+            if (apply) {
+                captureHighSpeed = highSpeed;
+                manualSensorAvailable = hasManualSensor(c);
             }
-
-            Size[] highSpeedSizes =
-                    map.getHighSpeedVideoSizes();
-
-            if (!containsSize(
-                    highSpeedSizes,
-                    wantedSize
-            )) {
-                continue;
-            }
-
-            Range<Integer>[] ranges =
-                    map.getHighSpeedVideoFpsRangesFor(
-                            wantedSize
-                    );
-
-            if (ranges == null) {
-                continue;
-            }
-
-            for (Range<Integer> range :
-                    ranges) {
-
-                if (range.getLower() ==
-                        captureFps &&
-                        range.getUpper() ==
-                                captureFps) {
-
-                    return id;
-                }
-            }
+            return id;
         }
+        throw new IllegalArgumentException("No fixed " + fps + " fps at " + width + "x" + height + ". Try 720p in Camera settings.");
+    }
 
-        throw new RuntimeException(
-                "No " +
-                        captureWidth +
-                        "x" +
-                        captureHeight +
-                        " " +
-                        captureFps +
-                        "fps camera found"
-        );
+    String findCaptureCamera() throws Exception {
+        return selectCaptureCamera(captureWidth, captureHeight, captureFps, true);
     }
 
     boolean containsSize(
@@ -4275,11 +4117,9 @@ public class MainActivity extends Activity {
             running = false;
             glView.setLensMode(mode);
             if (isManualTapeMode()) glView.showRamLive();
-            captureFps = 60;
-            captureWidth = 1920;
-            captureHeight = 1080;
+            captureFps = selectedCaptureFps;
             playbackFps = 60;
-            activeTestPreset = "TAPE3_1080P60";
+            activeTestPreset = "TAPE3_" + captureWidth + "X" + captureHeight + "_" + captureFps;
             updateControlButtons();
             updateScrubUi();
             scheduleCameraRecovery("Tape3 mode restart");
@@ -4289,7 +4129,7 @@ public class MainActivity extends Activity {
         if (mode == GLView.LensMode.DUBBUF_REVERSE) {
             running = false; recordingFollowing = false; recordingCycleId = -1; loadingCycleId = -1;
             glView.stopFreeze(); glView.releaseAllPlayers(); glView.setLensMode(mode);
-            captureFps = 60; captureWidth = 1280; captureHeight = 720; playbackFps = 30;
+            captureFps = selectedCaptureFps; captureWidth = 1280; captureHeight = 720; playbackFps = 30;
             activeTestPreset = "DUBBUF_REVERSE_60_30_TAPE";
             updateControlButtons(); updateOverlay("Reverse; restarting");
             if (splashPanel != null) splashPanel.setVisibility(View.GONE);
@@ -4314,7 +4154,7 @@ public class MainActivity extends Activity {
             glView.releaseAllPlayers();
             glView.setLensMode(mode);
 
-            captureFps = 60;
+            captureFps = selectedCaptureFps;
             captureWidth = 1920;
             captureHeight = 1080;
             playbackFps = 60;
@@ -4350,7 +4190,7 @@ public class MainActivity extends Activity {
             glView.releaseAllPlayers();
             glView.setLensMode(mode);
 
-            captureFps = 60;
+            captureFps = selectedCaptureFps;
             captureWidth = 1920;
             captureHeight = 1080;
             playbackFps = 60;
@@ -4376,13 +4216,12 @@ public class MainActivity extends Activity {
             glView.stopFast();
             glView.releaseAllPlayers();
             glView.setLensMode(mode);
-            captureFps = 60;
+            captureFps = selectedCaptureFps;
             captureWidth = 1920;
             captureHeight = 1080;
             playbackFps = 60;
             activeTestPreset = "RAM_SCRUB_1080P60";
             ramSelectedOffsetMs = 0L;
-            if (scrubSeek != null) scrubSeek.setProgress(33);
             updateControlButtons();
             updateScrubUi();
             updateOverlay("Scrub RAM 1080p60; restarting");
@@ -4401,7 +4240,7 @@ public class MainActivity extends Activity {
             glView.stopStutter();
             glView.releaseAllPlayers();
             glView.setLensMode(mode);
-            captureFps = 60;
+            captureFps = selectedCaptureFps;
             captureWidth = 1280;
             captureHeight = 720;
             playbackFps = 60;
@@ -4421,7 +4260,7 @@ public class MainActivity extends Activity {
             glView.stopDubBufReverse();
             glView.releaseAllPlayers();
             glView.setLensMode(mode);
-            captureFps = 60;
+            captureFps = selectedCaptureFps;
             captureWidth = 1280;
             captureHeight = 720;
             playbackFps = 60;
@@ -4447,7 +4286,7 @@ public class MainActivity extends Activity {
             setRecordingIndicator(false);
             glView.releaseAllPlayers();
             boolean needsNormalPreview = captureFps > 60 || captureWidth != 1280 || captureHeight != 720;
-            captureFps = 60; captureWidth = 1280; captureHeight = 720; playbackFps = 60;
+            captureFps = selectedCaptureFps; captureWidth = 1280; captureHeight = 720; playbackFps = 60;
             activeTestPreset = "STROBE_720P60";
             glView.setLensMode(GLView.LensMode.FREEZE);
             glView.startFreeze(5.0f);
@@ -4460,18 +4299,14 @@ public class MainActivity extends Activity {
         glView.stopFreeze();
         glView.setLensMode(mode);
 
-        // Slow Lens requires the constrained 240 fps camera path. Reverse is
-        // intentionally left on its 120 fps high-speed request for this release.
-        captureFps = mode == GLView.LensMode.SLOW
-                ? SLOW_CAPTURE_FPS
-                : REVERSE_CAPTURE_FPS;
+        captureFps = selectedCaptureFps;
 
         if (mode == GLView.LensMode.SLOW) {
-            playbackFps = Math.max(1, Math.round((float) SLOW_CAPTURE_FPS / slowFactor));
+            playbackFps = Math.max(1, Math.round((float) captureFps / slowFactor));
             captureWidth = 1920;
             captureHeight = 1080;
             recordCueMs = 0;
-            activeTestPreset = "SLOW_1080P240_TAPE";
+            activeTestPreset = "SLOW_1080P" + captureFps + "_TAPE";
         } else {
             playbackFps = 48;
             captureWidth = 1280;
@@ -4521,7 +4356,7 @@ public class MainActivity extends Activity {
 
     void setSlowFactor(int factor) {
         slowFactor = Math.max(2, Math.min(16, factor));
-        playbackFps = Math.max(1, Math.round((float) SLOW_CAPTURE_FPS / slowFactor));
+        playbackFps = Math.max(1, Math.round((float) captureFps / slowFactor));
         captureDurationMs = Math.max(50, slowPlaybackMs / slowFactor);
         recordCueMs = 0;
         if (glView != null && glView.getLensMode() == GLView.LensMode.SLOW) {
@@ -4587,36 +4422,26 @@ public class MainActivity extends Activity {
         updateControlButtons();
     }
 
-    void setCaptureResolution(
-            int width,
-            int height
-    ) {
-        if (captureWidth == width &&
-                captureHeight == height) {
-            return;
-        }
-
+    void setCaptureResolution(int width, int height) {
+        if (captureWidth == width && captureHeight == height) return;
+        try {
+            if (cameraManager != null) selectCaptureCamera(width, height, captureFps, false);
+        } catch (Exception e) { flashStatus(e.getMessage(), 3500); return; }
         captureWidth = width;
         captureHeight = height;
-        restartForCaptureOptions(
-                "Resolution " +
-                        width +
-                        "x" +
-                        height
-        );
+        restartForCaptureOptions("Resolution " + width + "x" + height);
     }
 
     void setCaptureFps(int fps) {
-        if (captureFps == fps) {
-            return;
-        }
-
-        captureFps = fps;
-        restartForCaptureOptions(
-                "Capture rate " +
-                        fps +
-                        " fps"
-        );
+        if (fps != 60 && fps != 120) return;
+        try {
+            if (cameraManager != null) selectCaptureCamera(captureWidth, captureHeight, fps, false);
+        } catch (Exception e) { flashStatus(e.getMessage(), 3500); return; }
+        selectedCaptureFps = captureFps = fps;
+        if (glView != null && glView.getLensMode() == GLView.LensMode.SLOW)
+            playbackFps = Math.max(1, Math.round((float) fps / slowFactor));
+        updateControlButtons();
+        scheduleCameraRecovery("Capture FPS " + fps);
     }
 
     void setCaptureDuration(int durationMs) {
@@ -5015,8 +4840,8 @@ public class MainActivity extends Activity {
                     overlay.setText("TAPE3\nStarting...");
                 } else {
                     overlay.setText(String.format(Locale.US,
-                            "TAPE3  1920x1080\n" +
-                            "HS AE %s\n\n" +
+                            "TAPE3  %dx%d @ %d requested FPS\n" +
+                            "%s exposure / FPS range %s\n\n" +
                             "SENSOR\n" +
                             "Frame     %.2f ms   %.1f fps\n" +
                             "Exposure  %.2f ms\n" +
@@ -5037,6 +4862,8 @@ public class MainActivity extends Activity {
                             "RAM       %.1f / 128 MiB\n" +
                             "Write     %.2f MB/s\n" +
                             "History   %.1f s",
+                            captureWidth, captureHeight, captureFps,
+                            captureHighSpeed || !manualExposure || !manualSensorAvailable ? "Auto" : "Manual",
                             tape3RequestedAe,
                             tape3SensorFrameMs,
                             sensorFps,
