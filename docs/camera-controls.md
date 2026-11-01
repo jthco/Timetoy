@@ -29,14 +29,33 @@ sampling rates of the chunked effects (including Reverse's 30 Hz bank).
 
 The renderer uses the producer's SurfaceTexture matrix directly for camera and
 decoder textures. No app-added rotation is applied to camera pixels, effect history,
-or decoder frames. GUI orientation/layout can still follow Android configuration.
-The recorder and player sources contain no additional rotation/orientation hints.
+or decoder frames. The activity window is fixed to landscape so Android cannot
+rotate the SurfaceView with the phone. Controls live in a separate GUI sibling:
+only that layer rotates, using physical orientation and the fixed display turn.
+The GUI's layout dimensions swap for quarter turns. Choice palettes are children
+of the same GUI layer, so menus follow it too. Orientation sensing is disabled
+while paused. The recorder and player contain no extra rotation/orientation hints.
+
+Capture requests also set android.scaler.rotateAndCrop to NONE when that key is
+advertised, preventing Camera2 automatic frame rotation/cropping on newer devices.
+The key is addressed by name to retain compileSdk 29/AIDE compatibility. New trace
+lines report GUI turns separately from video surface bounds and rotate/crop policy.
+
+The supplied smm_trace_1793528375486.txt showed decoder rotation-degrees=0 and
+manual 60 FPS requests, but actual 33.333 ms sensor frames (about 30 FPS) and a
+remaining TEMPLATE_RECORD FPS range of [30,30]. Manual requests now replace that
+range with the selected fixed range when advertised. When it is not advertised,
+we log the available ranges rather than setting an unsupported value. Explicit
+FPS MISMATCH diagnostics distinguish a requested rate from actual delivery.
+This does not establish that the device now delivers 60 FPS; a new trace is needed.
 
 ## Validation
 
 CaptureTimingCheck passes for 60/120 FPS periods, short shutters, clamping a long
 shutter at each FPS, sensor min/max limits, and incompatible exposure ranges.
-TapePlayheadCheck still passes, and changed Java sources pass javac parsing.
+TapePlayheadCheck and GuiOrientationCheck pass. GUI tests cover all physical and
+display quarter turns, quantization, and dimension swaps. Changed Java sources
+pass javac parsing, and the fixed-landscape manifest parses successfully.
 Full Android compilation and device validation remain required.
 
 On device, verify live/effect switching and GUI rotation without quarter-turn image

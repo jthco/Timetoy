@@ -146,6 +146,7 @@ public class GLRenderer implements GLSurfaceView.Renderer {
 
     @Override public void onSurfaceChanged(javax.microedition.khronos.opengles.GL10 gl, int w, int h) {
         screenW = Math.max(1, w); screenH = Math.max(1, h);
+        TraceLog.i("Video surface bounds=" + screenW + "x" + screenH + " appPixelRotation=NONE");
         GLES20.glViewport(0, 0, screenW, screenH);
         if (freezeTexId != 0 && (freezeWidth != screenW || freezeHeight != screenH)) releaseFreezeTexture();
     }

@@ -75,6 +75,9 @@ public class MainActivity extends Activity {
     static final int DEFAULT_RECORD_MS = 500;
 
     GLView glView;
+    FrameLayout guiRoot, choiceOverlay;
+    OrientationEventListener guiOrientationListener;
+    int guiRotation;
 
     View recordingFrame;
     View recordCue;
@@ -343,6 +346,9 @@ public class MainActivity extends Activity {
                         long nowNs = System.nanoTime();
                         if (tape3AuditFirstNs == 0L) {
                             tape3AuditFirstNs = nowNs;
+                            if (frameDuration != null && frameDuration > CaptureTiming.frameNs(captureFps) * 1.1)
+                                TraceLog.i("FPS MISMATCH requested=" + captureFps + " sensor=" +
+                                        (1_000_000_000.0 / frameDuration) + " requestAE=" + aeRange);
                             tape3AuditLastLogNs = nowNs;
                             tape3AuditLastFrames = tape3AuditFrames;
                         } else if (nowNs - tape3AuditLastLogNs >= 5000000000L) {
@@ -666,14 +672,18 @@ public class MainActivity extends Activity {
                 )
         );
 
-        buildRecordingFrame(root);
-        buildRecordCue(root);
-        buildRecordProgress(root);
-        buildHud(root);
-        buildModeRail(root);
-        buildWatermark(root);
-        buildFlashLabel(root);
-        buildSplash(root);
+        // The video surface is a sibling, never a child of the rotating GUI.
+        guiRoot = new FrameLayout(this);
+        root.addView(guiRoot, new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER));
+        buildRecordingFrame(guiRoot);
+        buildRecordCue(guiRoot);
+        buildRecordProgress(guiRoot);
+        buildHud(guiRoot);
+        buildModeRail(guiRoot);
+        buildWatermark(guiRoot);
+        buildFlashLabel(guiRoot);
+        buildSplash(guiRoot);
+        installGuiOrientation(root);
 
         setContentView(root);
 
@@ -771,6 +781,57 @@ public class MainActivity extends Activity {
         hudHandler.post(
                 hudHeartbeat
         );
+    }
+
+    void installGuiOrientation(FrameLayout videoRoot) {
+        videoRoot.addOnLayoutChangeListener((v, left, top, right, bottom,
+                oldLeft, oldTop, oldRight, oldBottom) -> layoutGui(videoRoot));
+        guiOrientationListener = new OrientationEventListener(this) {
+            private int lastQuadrant = -1;
+            @Override public void onOrientationChanged(int orientation) {
+                if (orientation == ORIENTATION_UNKNOWN) return;
+                int quadrant = ((orientation + 45) / 90 * 90) % 360;
+                // Ignore small movement near quadrant boundaries.
+                if (lastQuadrant >= 0) {
+                    int difference = Math.abs(orientation - lastQuadrant);
+                    difference = Math.min(difference, 360 - difference);
+                    if (difference < 60) return;
+                }
+                lastQuadrant = quadrant;
+                int displayDegrees = getWindowManager().getDefaultDisplay().getRotation() * 90;
+                guiRotation = GuiOrientation.rotation(quadrant, displayDegrees);
+                layoutGui(videoRoot);
+                TraceLog.i("GUI orientation physical=" + quadrant + " display=" + displayDegrees +
+                        " guiTurn=" + guiRotation + " video=FIXED_LANDSCAPE");
+            }
+        };
+        TraceLog.i("View orientation fixed landscape; only GUI follows physical orientation");
+    }
+
+    void layoutGui(FrameLayout videoRoot) {
+        int width = videoRoot.getWidth(), height = videoRoot.getHeight();
+        if (width == 0 || height == 0 || guiRoot == null) return;
+        boolean swap = GuiOrientation.swapsAxes(guiRotation);
+        int guiWidth = swap ? height : width;
+        int guiHeight = swap ? width : height;
+        FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) guiRoot.getLayoutParams();
+        if (params.width != guiWidth || params.height != guiHeight) {
+            params.width = guiWidth;
+            params.height = guiHeight;
+            params.gravity = Gravity.CENTER;
+            guiRoot.setLayoutParams(params);
+        }
+        guiRoot.setRotation(guiRotation);
+    }
+
+    @Override public void onBackPressed() {
+        if (choiceOverlay != null) dismissChoices();
+        else super.onBackPressed();
+    }
+
+    void dismissChoices() {
+        if (choiceOverlay != null && guiRoot != null) guiRoot.removeView(choiceOverlay);
+        choiceOverlay = null;
     }
 
     void buildSplash(FrameLayout root) {
@@ -1162,40 +1223,45 @@ public class MainActivity extends Activity {
     }
 
     void showChoicePopup(View anchor, String[] labels, Runnable[] actions, int[] colors) {
-        final PopupWindow[] holder = new PopupWindow[1];
+        dismissChoices();
+        FrameLayout overlay = new FrameLayout(this);
+        choiceOverlay = overlay;
+        overlay.setOnClickListener(v -> dismissChoices());
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(4), dp(4), dp(4), dp(4));
         box.setBackgroundColor(0xee202020);
-
+        box.setClickable(true);
         for (int i = 0; i < labels.length; i++) {
             final int index = i;
-            Button b = new Button(this);
-            b.setAllCaps(false);
-            b.setText(labels[i]);
-            b.setTextSize(13);
-            b.setMinHeight(0);
-            b.setMinimumHeight(0);
-            b.setPadding(dp(8), dp(4), dp(8), dp(4));
+            Button button = new Button(this);
+            button.setAllCaps(false);
+            button.setText(labels[i]);
+            button.setTextSize(13);
+            button.setMinHeight(0);
+            button.setMinimumHeight(0);
+            button.setPadding(dp(8), dp(4), dp(8), dp(4));
             if (colors != null && i < colors.length) {
-                b.setBackgroundColor(colors[i]);
-                b.setTextColor(0xff000000);
+                button.setBackgroundColor(colors[i]);
+                button.setTextColor(0xff000000);
             }
-            b.setOnClickListener(v -> {
+            button.setOnClickListener(v -> {
+                dismissChoices();
                 if (actions[index] != null) actions[index].run();
-                if (holder[0] != null) holder[0].dismiss();
             });
-            box.addView(b, new LinearLayout.LayoutParams(dp(170), dp(44)));
+            box.addView(button, new LinearLayout.LayoutParams(-1, dp(44)));
         }
-
-        PopupWindow popup = new PopupWindow(
-                box, dp(178), WindowManager.LayoutParams.WRAP_CONTENT, true);
-        holder[0] = popup;
-        popup.setBackgroundDrawable(
-                new android.graphics.drawable.ColorDrawable(0xee202020));
-        popup.setOutsideTouchable(true);
-        popup.setElevation(dp(6));
-        popup.showAsDropDown(anchor, dp(4), -anchor.getHeight());
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(false);
+        scroll.addView(box);
+        int availableWidth = Math.max(dp(178), guiRoot.getWidth());
+        int availableHeight = Math.max(dp(44), guiRoot.getHeight() - dp(20));
+        FrameLayout.LayoutParams palette = new FrameLayout.LayoutParams(
+                dp(178), Math.min(dp(labels.length * 44 + 8), availableHeight), Gravity.TOP | Gravity.LEFT);
+        palette.leftMargin = Math.min(dp(140), Math.max(dp(4), availableWidth - dp(182)));
+        palette.topMargin = dp(10);
+        overlay.addView(scroll, palette);
+        guiRoot.addView(overlay, new FrameLayout.LayoutParams(-1, -1));
     }
 
     void showModeChoices(View anchor) {
@@ -1323,13 +1389,32 @@ public class MainActivity extends Activity {
     void applyCaptureControls(CaptureRequest.Builder request, boolean highSpeed) throws Exception {
         CameraCharacteristics c = cameraManager.getCameraCharacteristics(cameraDevice.getId());
         boolean manual = manualExposure && !highSpeed && hasManualSensor(c);
+        List<CaptureRequest.Key<?>> keys = c.getAvailableCaptureRequestKeys();
+        boolean rotateAndCropDisabled = false;
+        if (keys != null) for (CaptureRequest.Key<?> key : keys) {
+            if ("android.scaler.rotateAndCrop".equals(key.getName())) {
+                request.set(new CaptureRequest.Key<Integer>("android.scaler.rotateAndCrop", Integer.class), 0);
+                rotateAndCropDisabled = true;
+                break;
+            }
+        }
+        TraceLog.i("Camera rotate-and-crop=" + (rotateAndCropDisabled ? "NONE" : "not exposed"));
         request.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO);
         request.set(CaptureRequest.CONTROL_AE_MODE, manual
                 ? CaptureRequest.CONTROL_AE_MODE_OFF : CaptureRequest.CONTROL_AE_MODE_ON);
-        if (!manual) {
-            // Never ask for a variable range that can trade cadence for brightness.
-            request.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, new Range<Integer>(captureFps, captureFps));
-        } else {
+        Range<Integer> fixedFps = new Range<Integer>(captureFps, captureFps);
+        Range<Integer>[] advertised = c.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES);
+        boolean fixedFpsAdvertised = false;
+        if (advertised != null) for (Range<Integer> range : advertised)
+            if (fixedFps.equals(range)) fixedFpsAdvertised = true;
+        // Some HALs retain TEMPLATE_RECORD's 30 FPS range even with AE off.
+        // Replace it in manual mode too, whenever the exact range is advertised.
+        if (!manual || fixedFpsAdvertised)
+            request.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, fixedFps);
+        TraceLog.i("FPS control requested=" + captureFps + " fixedRangeAdvertised=" + fixedFpsAdvertised +
+                " availableAE=" + Arrays.toString(advertised) +
+                " requestAE=" + request.get(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE));
+        if (manual) {
             Range<Long> exposureRange = c.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE);
             Range<Integer> isoRange = c.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE);
             if (exposureRange == null || isoRange == null)
@@ -5004,6 +5089,8 @@ public class MainActivity extends Activity {
         TraceLog.i("DEEP LIFE onPause ENTER");
         super.onPause();
         appPaused = true;
+        if (guiOrientationListener != null) guiOrientationListener.disable();
+        dismissChoices();
         stopImu();
 
         running = false;
@@ -5024,6 +5111,8 @@ public class MainActivity extends Activity {
     protected void onResume() {
         TraceLog.i("DEEP LIFE onResume ENTER");
         super.onResume();
+        if (guiOrientationListener != null && guiOrientationListener.canDetectOrientation())
+            guiOrientationListener.enable();
         enterFullscreen();
         if (!appPaused) return;
         appPaused = false;
@@ -5043,6 +5132,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (guiOrientationListener != null) guiOrientationListener.disable();
         running = false;
 
         hudHandler.removeCallbacks(
