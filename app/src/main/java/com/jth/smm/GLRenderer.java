@@ -46,13 +46,7 @@ public class GLRenderer implements GLSurfaceView.Renderer {
     int dubBufPlayCycle = -1;
     int dubBufRecordCycle = 1;
 
-    // Camera2 preview arrives in sensor orientation. Apply this once at the
-    // camera source so live preview and every effect inherit the same image.
-    static final float CAMERA_LANDSCAPE_ROTATION_DEGREES = -90.0f;
-    static final float CAMERA_PORTRAIT_ROTATION_DEGREES = 0.0f;
-    volatile boolean portraitOrientation = false;
-    final float[] rawCameraMatrix = new float[16];
-    final float[] cameraCorrectionMatrix = new float[16];
+    // Keep the producer's texture transform; never rotate camera pixels for GUI orientation.
 
     // Stutter is the first circular-history effect. Recording never pauses.
     static final int HISTORY_WIDTH = 1280;
@@ -131,7 +125,6 @@ public class GLRenderer implements GLSurfaceView.Renderer {
         ramYuvProgram = makeProgram(VERT, FRAG_YUV);
         cameraTexId = makeExternalTexture();
         cameraSource = new SimpleTextureSource(cameraTexId, GL_TEXTURE_EXTERNAL_OES);
-        updateCameraCorrectionMatrix();
         currentSource = cameraSource;
         cameraSurfaceTexture = new SurfaceTexture(cameraTexId);
         cameraSurfaceTexture.setOnFrameAvailableListener(st -> view.queueEvent(this::onCameraFrameAvailable));
@@ -151,25 +144,9 @@ public class GLRenderer implements GLSurfaceView.Renderer {
         glCheck("onSurfaceCreated");
     }
 
-    public void setPortraitOrientation(boolean portrait) {
-        portraitOrientation = portrait;
-    }
-
-    private void updateCameraCorrectionMatrix() {
-        float degrees = portraitOrientation
-                ? CAMERA_PORTRAIT_ROTATION_DEGREES
-                : CAMERA_LANDSCAPE_ROTATION_DEGREES;
-        android.opengl.Matrix.setIdentityM(cameraCorrectionMatrix, 0);
-        android.opengl.Matrix.translateM(cameraCorrectionMatrix, 0, 0.5f, 0.5f, 0f);
-        android.opengl.Matrix.rotateM(cameraCorrectionMatrix, 0,
-                degrees, 0f, 0f, 1f);
-        android.opengl.Matrix.translateM(cameraCorrectionMatrix, 0, -0.5f, -0.5f, 0f);
-        TraceLog.i("Camera texture orientation portrait=" + portraitOrientation +
-                " rotation=" + degrees);
-    }
-
     @Override public void onSurfaceChanged(javax.microedition.khronos.opengles.GL10 gl, int w, int h) {
         screenW = Math.max(1, w); screenH = Math.max(1, h);
+        TraceLog.i("Video surface bounds=" + screenW + "x" + screenH + " appPixelRotation=NONE");
         GLES20.glViewport(0, 0, screenW, screenH);
         if (freezeTexId != 0 && (freezeWidth != screenW || freezeHeight != screenH)) releaseFreezeTexture();
     }
@@ -197,9 +174,7 @@ public class GLRenderer implements GLSurfaceView.Renderer {
     void onCameraFrameAvailable() {
         try {
             cameraSurfaceTexture.updateTexImage();
-            cameraSurfaceTexture.getTransformMatrix(rawCameraMatrix);
-            android.opengl.Matrix.multiplyMM(cameraSource.matrix, 0,
-                    rawCameraMatrix, 0, cameraCorrectionMatrix, 0);
+            cameraSurfaceTexture.getTransformMatrix(cameraSource.matrix);
             cameraFrameCount++;
             long fpsNow = System.nanoTime();
             if (cameraFpsWindowStartNs == 0L) cameraFpsWindowStartNs = fpsNow;
@@ -226,22 +201,6 @@ public class GLRenderer implements GLSurfaceView.Renderer {
             decoderSurfaceTextures[slot].updateTexImage();
             TraceLog.i("DEEP GL updateTexImage END slot=" + slot);
             decoderSurfaceTextures[slot].getTransformMatrix(decoderSources[slot].matrix);
-            if (slot == 0 && view.getLensMode() == GLView.LensMode.TAPE3) {
-                decoderSurfaceTextures[slot].getTransformMatrix(rawCameraMatrix);
-                android.opengl.Matrix.setIdentityM(cameraCorrectionMatrix, 0);
-                android.opengl.Matrix.translateM(cameraCorrectionMatrix, 0, 0.5f, 0.5f, 0f);
-boolean portrait =
-        view.getResources().getConfiguration().orientation
-        == android.content.res.Configuration.ORIENTATION_PORTRAIT;
-android.opengl.Matrix.rotateM(
-        cameraCorrectionMatrix, 0,
-        0f,
-        0f, 0f, 1f
-);
-                android.opengl.Matrix.translateM(cameraCorrectionMatrix, 0, -0.5f, -0.5f, 0f);
-                android.opengl.Matrix.multiplyMM(decoderSources[slot].matrix, 0,
-                        rawCameraMatrix, 0, cameraCorrectionMatrix, 0);
-            }
             TraceLog.i("DEEP GL transform END slot=" + slot);
             decoderFrameCounts[slot]++;
             if (pendingCaptureFrame[slot] >= 0) {

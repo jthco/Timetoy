@@ -163,6 +163,18 @@ public final class Tape3 {
     private static final int ARENA_BYTES = ARENA_MIB * 1024 * 1024;
     private static final int MAX_FRAMES = 32768;
 
+    private final TapePlayhead manualPlayhead = new TapePlayhead();
+    private volatile boolean manualPlayback;
+
+    public void setManualPlayback(boolean enabled) {
+        manualPlayhead.reset();
+        manualPlayback = enabled;
+    }
+
+    public void setPlaybackSpeed(double speed) { manualPlayhead.setSpeed(speed); }
+    public void jumpToLive() { manualPlayhead.reset(); }
+    public boolean isPlaybackLive() { return manualPlayback && manualPlayhead.isLive(); }
+
     private volatile long requestedDelayUs = 1_000_000L;
     private volatile long lfoPeriodMs = 2000L;
     private volatile long lfoAmountMs = 0L;
@@ -178,7 +190,7 @@ public final class Tape3 {
 
     public long getLfoPeriodMs() { return lfoPeriodMs; }
     public long getLfoAmountMs() { return lfoAmountMs; }
-    public long getEffectiveDelayMs() { return effectiveDelayUs() / 1000L; }
+    public long getEffectiveDelayMs() { return manualPlayback ? manualPlayhead.delayMs() : effectiveDelayUs() / 1000L; }
 
     private long effectiveDelayUs() {
         long amount = lfoAmountMs;
@@ -765,7 +777,9 @@ public final class Tape3 {
         int oldest = indexWrite - indexCount;
         if (oldest < 0) oldest += MAX_FRAMES;
 
-        final long target = currentPtsUs - effectiveDelayUs();
+        final long target = manualPlayback
+                ? manualPlayhead.select(currentPtsUs, ptsUs[oldest])
+                : currentPtsUs - effectiveDelayUs();
 
         int i =
                 indexWrite - 1;
