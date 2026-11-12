@@ -28,8 +28,9 @@ No AGENTS.md or other project instructions were present in the repository tree.
   all new Tape3 modes. Manual modes show the direct camera output when Live.
 - No mode preference serialization or restoration was found in MainActivity/GLView;
   startup now selects the contiguous Wobble engine. No persisted aliases were added.
-- FX remains an existing placeholder. Adjacent FX implementation, Free entitlements,
-  and other apps are outside this mode cleanup.
+- FX now offers independent Pop, BW, and Mirror toggles in that order. They apply
+  on presentation, including buffered playback, without altering stored frames.
+  Free entitlements and other apps remain outside this cleanup.
 
 ## Validation
 

@@ -97,6 +97,7 @@ public class MainActivity extends Activity {
     LinearLayout modeRail;
     TextView railTT, railView, railTime, railParam, railFX, railShare, railCamera;
     LinearLayout scrubPanel;
+    boolean fxPop, fxBw, fxMirror;
     float downshiftFactor = 0.25f;
     boolean downshiftDelayed, downshiftResetGesture;
 
@@ -1507,11 +1508,20 @@ public class MainActivity extends Activity {
     }
 
     void showFxChoices(View anchor) {
-        Runnable stub = () -> flashStatus("FX — coming later", 900);
         showChoicePopup(anchor,
-                new String[]{"B/W", "Pop", "Mirror"},
-                new Runnable[]{stub, stub, stub});
-                        
+                new String[]{"Pop: " + (fxPop ? "On" : "Off"),
+                        "BW: " + (fxBw ? "On" : "Off"),
+                        "Mirror: " + (fxMirror ? "On" : "Off")},
+                new Runnable[]{
+                        () -> { fxPop = !fxPop; applyFx(); },
+                        () -> { fxBw = !fxBw; applyFx(); },
+                        () -> { fxMirror = !fxMirror; applyFx(); }
+                });
+    }
+
+    void applyFx() {
+        if (glView != null) glView.setFx(fxPop, fxBw, fxMirror);
+        updateModeRail();
     }
 
     int modeColor() {
@@ -1622,7 +1632,8 @@ public class MainActivity extends Activity {
         railTime.setText(wobble ? String.format(Locale.US, "DELAY %.3f s", wobbleDelayMs / 1000.0) : time.toUpperCase(Locale.US));
         if (wobble) factor = "AMOUNT " + String.format(Locale.US, "%.3f s", lfoAmountMs / 1000.0);
         railParam.setText(factor);
-        railFX.setText("FX");
+        int fxCount = (fxPop ? 1 : 0) + (fxBw ? 1 : 0) + (fxMirror ? 1 : 0);
+        railFX.setText(fxCount == 0 ? "FX" : "FX " + fxCount);
         railShare.setText("SHARE");
         railCamera.setText("CAM " + captureFps + (captureHighSpeed || !manualSensorAvailable || !manualExposure ? " A" : " M"));
         applyModeColor();

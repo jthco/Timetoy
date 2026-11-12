@@ -94,6 +94,7 @@ public class GLRenderer implements GLSurfaceView.Renderer {
     TextureSource currentSource;
     int visibleDecoderSlot = -1;
     volatile float playbackGain = 1.0f;
+    private boolean fxPop, fxBw, fxMirror;
     int screenW = 1, screenH = 1;
     int drawCount = 0, cameraFrameCount = 0;
     final int[] decoderFrameCounts = new int[2];
@@ -766,6 +767,7 @@ public class GLRenderer implements GLSurfaceView.Renderer {
         GLES20.glVertexAttribPointer(aTex, 2, GLES20.GL_FLOAT, false, 16, vertexBuffer);
         GLES20.glEnableVertexAttribArray(aTex);
         GLES20.glUniformMatrix4fv(uMatrix, 1, false, cameraSource.transform(), 0);
+        setFxUniforms(ramYuvProgram, true);
 
         int[] uniforms = {
                 GLES20.glGetUniformLocation(ramYuvProgram, "sY"),
@@ -809,9 +811,14 @@ public class GLRenderer implements GLSurfaceView.Renderer {
         if (src == null) return;
         float gain=1.0f;
         if (visibleDecoderSlot>=0 && (src==decoderSources[visibleDecoderSlot] || isVisibleReverseSource(src,visibleDecoderSlot))) gain=playbackGain;
-        drawTextureWithGain(src,gain);
+        drawTextureWithGain(src, gain, true);
     }
     void drawTextureWithGain(TextureSource src,float gain) {
+        // History and freeze captures stay raw. FX apply only on presentation,
+        // so toggles also affect existing history without accumulating effects.
+        drawTextureWithGain(src, gain, false);
+    }
+    private void drawTextureWithGain(TextureSource src, float gain, boolean applyFx) {
         int program=src.textureTarget()==GL_TEXTURE_EXTERNAL_OES?extProgram:tex2dProgram;
         GLES20.glUseProgram(program);
         int aPos=GLES20.glGetAttribLocation(program,"aPosition");
@@ -827,10 +834,23 @@ public class GLRenderer implements GLSurfaceView.Renderer {
         GLES20.glEnableVertexAttribArray(aTex);
         GLES20.glUniformMatrix4fv(uMatrix,1,false,src.transform(),0);
         GLES20.glUniform1f(uGain,gain);
+        setFxUniforms(program, applyFx);
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
         GLES20.glBindTexture(src.textureTarget(),src.textureId());
         GLES20.glUniform1i(uTexture,0);
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP,0,4);
+    }
+
+    public void setFx(boolean pop, boolean bw, boolean mirror) {
+        fxPop = pop;
+        fxBw = bw;
+        fxMirror = mirror;
+    }
+
+    private void setFxUniforms(int program, boolean enabled) {
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uPop"), enabled && fxPop ? 1.0f : 0.0f);
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uBw"), enabled && fxBw ? 1.0f : 0.0f);
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uMirror"), enabled && fxMirror ? 1.0f : 0.0f);
     }
 
     int make2dTexture() {
@@ -867,21 +887,66 @@ public class GLRenderer implements GLSurfaceView.Renderer {
             android.util.Log.e("SlowMo240",where+" GL error 0x"+Integer.toHexString(err));
     }
 
-    static final String VERT="attribute vec4 aPosition;\nattribute vec4 aTexCoord;\nuniform mat4 uTexMatrix;\nvarying vec2 vTexCoord;\nvoid main(){\n gl_Position=aPosition;\n vTexCoord=(uTexMatrix*aTexCoord).xy;\n}\n";
-    static final String FRAG_EXT="#extension GL_OES_EGL_image_external : require\nprecision mediump float;\nuniform samplerExternalOES sTexture;\nuniform float uGain;\nvarying vec2 vTexCoord;\nvoid main(){\n vec4 c=texture2D(sTexture,vTexCoord);\n c.rgb=clamp(c.rgb*uGain,0.0,1.0);\n gl_FragColor=c;\n}\n";
-    static final String FRAG_2D="precision mediump float;\nuniform sampler2D sTexture;\nuniform float uGain;\nvarying vec2 vTexCoord;\nvoid main(){\n vec4 c=texture2D(sTexture,vTexCoord);\n c.rgb=clamp(c.rgb*uGain,0.0,1.0);\n gl_FragColor=c;\n}\n";
+    static final String VERT =
+            "attribute vec4 aPosition;\n" +
+            "attribute vec4 aTexCoord;\n" +
+            "uniform mat4 uTexMatrix;\n" +
+            "uniform float uMirror;\n" +
+            "varying vec2 vTexCoord;\n" +
+            "void main(){\n" +
+            " gl_Position=aPosition;\n" +
+            " vec4 uv=aTexCoord;\n" +
+            " uv.x=mix(uv.x,1.0-uv.x,uMirror);\n" +
+            " vTexCoord=(uTexMatrix*uv).xy;\n" +
+            "}\n";
+
+    static final String FX_COLOR =
+            "uniform float uPop;\n" +
+            "uniform float uBw;\n" +
+            "vec3 applyFx(vec3 rgb){\n" +
+            " if(uPop>0.5){\n" +
+            "  float luma=dot(rgb,vec3(0.299,0.587,0.114));\n" +
+            "  rgb=mix(vec3(luma),rgb,1.35);\n" +
+            "  rgb=clamp((rgb-0.5)*1.3+0.5,0.0,1.0);\n" +
+            " }\n" +
+            " if(uBw>0.5) rgb=vec3(dot(rgb,vec3(0.299,0.587,0.114)));\n" +
+            " return rgb;\n" +
+            "}\n";
+
+    static final String FRAG_EXT =
+            "#extension GL_OES_EGL_image_external : require\n" +
+            "precision mediump float;\n" +
+            "uniform samplerExternalOES sTexture;\n" +
+            "uniform float uGain;\n" +
+            "varying vec2 vTexCoord;\n" + FX_COLOR +
+            "void main(){\n" +
+            " vec4 c=texture2D(sTexture,vTexCoord);\n" +
+            " c.rgb=applyFx(clamp(c.rgb*uGain,0.0,1.0));\n" +
+            " gl_FragColor=c;\n" +
+            "}\n";
+
+    static final String FRAG_2D =
+            "precision mediump float;\n" +
+            "uniform sampler2D sTexture;\n" +
+            "uniform float uGain;\n" +
+            "varying vec2 vTexCoord;\n" + FX_COLOR +
+            "void main(){\n" +
+            " vec4 c=texture2D(sTexture,vTexCoord);\n" +
+            " c.rgb=applyFx(clamp(c.rgb*uGain,0.0,1.0));\n" +
+            " gl_FragColor=c;\n" +
+            "}\n";
+
     static final String FRAG_YUV =
             "precision mediump float;\n" +
             "uniform sampler2D sY;\n" +
             "uniform sampler2D sU;\n" +
             "uniform sampler2D sV;\n" +
-            "varying vec2 vTexCoord;\n" +
+            "varying vec2 vTexCoord;\n" + FX_COLOR +
             "void main(){\n" +
             " float y=texture2D(sY,vTexCoord).r;\n" +
             " float u=texture2D(sU,vTexCoord).r-0.5;\n" +
             " float v=texture2D(sV,vTexCoord).r-0.5;\n" +
-            " vec3 rgb=vec3(y+1.402*v, y-0.344136*u-0.714136*v, y+1.772*u);\n" +
-            " gl_FragColor=vec4(clamp(rgb,0.0,1.0),1.0);\n" +
+            " vec3 rgb=vec3(y+1.402*v,y-0.344136*u-0.714136*v,y+1.772*u);\n" +
+            " gl_FragColor=vec4(applyFx(clamp(rgb,0.0,1.0)),1.0);\n" +
             "}\n";
-
 }

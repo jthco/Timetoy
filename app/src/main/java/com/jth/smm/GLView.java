@@ -145,6 +145,13 @@ public class GLView extends GLSurfaceView {
         });
     }
 
+    public void setFx(boolean pop, boolean bw, boolean mirror) {
+        queueEvent(() -> {
+            renderer.setFx(pop, bw, mirror);
+            requestRender();
+        });
+    }
+
     public void setPlaybackGain(float gain) {
         queueEvent(() -> renderer.setPlaybackGain(gain));
     }
