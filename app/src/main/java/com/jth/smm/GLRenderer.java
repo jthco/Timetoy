@@ -46,13 +46,7 @@ public class GLRenderer implements GLSurfaceView.Renderer {
     int dubBufPlayCycle = -1;
     int dubBufRecordCycle = 1;
 
-    // Camera2 preview arrives in sensor orientation. Apply this once at the
-    // camera source so live preview and every effect inherit the same image.
-    static final float CAMERA_LANDSCAPE_ROTATION_DEGREES = -90.0f;
-    static final float CAMERA_PORTRAIT_ROTATION_DEGREES = 0.0f;
-    volatile boolean portraitOrientation = false;
-    final float[] rawCameraMatrix = new float[16];
-    final float[] cameraCorrectionMatrix = new float[16];
+    // Keep the producer's texture transform; never rotate camera pixels for GUI orientation.
 
     // Stutter is the first circular-history effect. Recording never pauses.
     static final int HISTORY_WIDTH = 1280;
@@ -100,6 +94,8 @@ public class GLRenderer implements GLSurfaceView.Renderer {
     TextureSource currentSource;
     int visibleDecoderSlot = -1;
     volatile float playbackGain = 1.0f;
+    private boolean fxPop, fxBw, fxMirror;
+    private boolean fxGuiSwapsAxes;
     int screenW = 1, screenH = 1;
     int drawCount = 0, cameraFrameCount = 0;
     final int[] decoderFrameCounts = new int[2];
@@ -131,7 +127,6 @@ public class GLRenderer implements GLSurfaceView.Renderer {
         ramYuvProgram = makeProgram(VERT, FRAG_YUV);
         cameraTexId = makeExternalTexture();
         cameraSource = new SimpleTextureSource(cameraTexId, GL_TEXTURE_EXTERNAL_OES);
-        updateCameraCorrectionMatrix();
         currentSource = cameraSource;
         cameraSurfaceTexture = new SurfaceTexture(cameraTexId);
         cameraSurfaceTexture.setOnFrameAvailableListener(st -> view.queueEvent(this::onCameraFrameAvailable));
@@ -151,25 +146,9 @@ public class GLRenderer implements GLSurfaceView.Renderer {
         glCheck("onSurfaceCreated");
     }
 
-    public void setPortraitOrientation(boolean portrait) {
-        portraitOrientation = portrait;
-    }
-
-    private void updateCameraCorrectionMatrix() {
-        float degrees = portraitOrientation
-                ? CAMERA_PORTRAIT_ROTATION_DEGREES
-                : CAMERA_LANDSCAPE_ROTATION_DEGREES;
-        android.opengl.Matrix.setIdentityM(cameraCorrectionMatrix, 0);
-        android.opengl.Matrix.translateM(cameraCorrectionMatrix, 0, 0.5f, 0.5f, 0f);
-        android.opengl.Matrix.rotateM(cameraCorrectionMatrix, 0,
-                degrees, 0f, 0f, 1f);
-        android.opengl.Matrix.translateM(cameraCorrectionMatrix, 0, -0.5f, -0.5f, 0f);
-        TraceLog.i("Camera texture orientation portrait=" + portraitOrientation +
-                " rotation=" + degrees);
-    }
-
     @Override public void onSurfaceChanged(javax.microedition.khronos.opengles.GL10 gl, int w, int h) {
         screenW = Math.max(1, w); screenH = Math.max(1, h);
+        TraceLog.i("Video surface bounds=" + screenW + "x" + screenH + " appPixelRotation=NONE");
         GLES20.glViewport(0, 0, screenW, screenH);
         if (freezeTexId != 0 && (freezeWidth != screenW || freezeHeight != screenH)) releaseFreezeTexture();
     }
@@ -197,9 +176,7 @@ public class GLRenderer implements GLSurfaceView.Renderer {
     void onCameraFrameAvailable() {
         try {
             cameraSurfaceTexture.updateTexImage();
-            cameraSurfaceTexture.getTransformMatrix(rawCameraMatrix);
-            android.opengl.Matrix.multiplyMM(cameraSource.matrix, 0,
-                    rawCameraMatrix, 0, cameraCorrectionMatrix, 0);
+            cameraSurfaceTexture.getTransformMatrix(cameraSource.matrix);
             cameraFrameCount++;
             long fpsNow = System.nanoTime();
             if (cameraFpsWindowStartNs == 0L) cameraFpsWindowStartNs = fpsNow;
@@ -226,22 +203,6 @@ public class GLRenderer implements GLSurfaceView.Renderer {
             decoderSurfaceTextures[slot].updateTexImage();
             TraceLog.i("DEEP GL updateTexImage END slot=" + slot);
             decoderSurfaceTextures[slot].getTransformMatrix(decoderSources[slot].matrix);
-            if (slot == 0 && view.getLensMode() == GLView.LensMode.TAPE3) {
-                decoderSurfaceTextures[slot].getTransformMatrix(rawCameraMatrix);
-                android.opengl.Matrix.setIdentityM(cameraCorrectionMatrix, 0);
-                android.opengl.Matrix.translateM(cameraCorrectionMatrix, 0, 0.5f, 0.5f, 0f);
-boolean portrait =
-        view.getResources().getConfiguration().orientation
-        == android.content.res.Configuration.ORIENTATION_PORTRAIT;
-android.opengl.Matrix.rotateM(
-        cameraCorrectionMatrix, 0,
-        0f,
-        0f, 0f, 1f
-);
-                android.opengl.Matrix.translateM(cameraCorrectionMatrix, 0, -0.5f, -0.5f, 0f);
-                android.opengl.Matrix.multiplyMM(decoderSources[slot].matrix, 0,
-                        rawCameraMatrix, 0, cameraCorrectionMatrix, 0);
-            }
             TraceLog.i("DEEP GL transform END slot=" + slot);
             decoderFrameCounts[slot]++;
             if (pendingCaptureFrame[slot] >= 0) {
@@ -807,6 +768,7 @@ android.opengl.Matrix.rotateM(
         GLES20.glVertexAttribPointer(aTex, 2, GLES20.GL_FLOAT, false, 16, vertexBuffer);
         GLES20.glEnableVertexAttribArray(aTex);
         GLES20.glUniformMatrix4fv(uMatrix, 1, false, cameraSource.transform(), 0);
+        setFxUniforms(ramYuvProgram, true);
 
         int[] uniforms = {
                 GLES20.glGetUniformLocation(ramYuvProgram, "sY"),
@@ -850,9 +812,14 @@ android.opengl.Matrix.rotateM(
         if (src == null) return;
         float gain=1.0f;
         if (visibleDecoderSlot>=0 && (src==decoderSources[visibleDecoderSlot] || isVisibleReverseSource(src,visibleDecoderSlot))) gain=playbackGain;
-        drawTextureWithGain(src,gain);
+        drawTextureWithGain(src, gain, true);
     }
     void drawTextureWithGain(TextureSource src,float gain) {
+        // History and freeze captures stay raw. FX apply only on presentation,
+        // so toggles also affect existing history without accumulating effects.
+        drawTextureWithGain(src, gain, false);
+    }
+    private void drawTextureWithGain(TextureSource src, float gain, boolean applyFx) {
         int program=src.textureTarget()==GL_TEXTURE_EXTERNAL_OES?extProgram:tex2dProgram;
         GLES20.glUseProgram(program);
         int aPos=GLES20.glGetAttribLocation(program,"aPosition");
@@ -868,10 +835,28 @@ android.opengl.Matrix.rotateM(
         GLES20.glEnableVertexAttribArray(aTex);
         GLES20.glUniformMatrix4fv(uMatrix,1,false,src.transform(),0);
         GLES20.glUniform1f(uGain,gain);
+        setFxUniforms(program, applyFx);
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
         GLES20.glBindTexture(src.textureTarget(),src.textureId());
         GLES20.glUniform1i(uTexture,0);
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP,0,4);
+    }
+
+    public void setFx(boolean pop, boolean bw, boolean mirror) {
+        fxPop = pop;
+        fxBw = bw;
+        fxMirror = mirror;
+    }
+
+    public void setFxOrientation(boolean swapsAxes) { fxGuiSwapsAxes = swapsAxes; }
+
+    private void setFxUniforms(int program, boolean enabled) {
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uPop"), enabled && fxPop ? 1.0f : 0.0f);
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uBw"), enabled && fxBw ? 1.0f : 0.0f);
+        boolean mirror = enabled && fxMirror;
+        GLES20.glUniform2f(GLES20.glGetUniformLocation(program, "uMirror"),
+                mirror && !fxGuiSwapsAxes ? 1.0f : 0.0f,
+                mirror && fxGuiSwapsAxes ? 1.0f : 0.0f);
     }
 
     int make2dTexture() {
@@ -908,21 +893,65 @@ android.opengl.Matrix.rotateM(
             android.util.Log.e("SlowMo240",where+" GL error 0x"+Integer.toHexString(err));
     }
 
-    static final String VERT="attribute vec4 aPosition;\nattribute vec4 aTexCoord;\nuniform mat4 uTexMatrix;\nvarying vec2 vTexCoord;\nvoid main(){\n gl_Position=aPosition;\n vTexCoord=(uTexMatrix*aTexCoord).xy;\n}\n";
-    static final String FRAG_EXT="#extension GL_OES_EGL_image_external : require\nprecision mediump float;\nuniform samplerExternalOES sTexture;\nuniform float uGain;\nvarying vec2 vTexCoord;\nvoid main(){\n vec4 c=texture2D(sTexture,vTexCoord);\n c.rgb=clamp(c.rgb*uGain,0.0,1.0);\n gl_FragColor=c;\n}\n";
-    static final String FRAG_2D="precision mediump float;\nuniform sampler2D sTexture;\nuniform float uGain;\nvarying vec2 vTexCoord;\nvoid main(){\n vec4 c=texture2D(sTexture,vTexCoord);\n c.rgb=clamp(c.rgb*uGain,0.0,1.0);\n gl_FragColor=c;\n}\n";
+    static final String VERT =
+            "attribute vec4 aPosition;\n" +
+            "attribute vec4 aTexCoord;\n" +
+            "uniform mat4 uTexMatrix;\n" +
+            "uniform vec2 uMirror;\n" +
+            "varying vec2 vTexCoord;\n" +
+            "void main(){\n" +
+            " gl_Position=aPosition;\n" +
+            " gl_Position.xy*=vec2(1.0)-2.0*uMirror;\n" +
+            " vTexCoord=(uTexMatrix*aTexCoord).xy;\n" +
+            "}\n";
+
+    static final String FX_COLOR =
+            "uniform float uPop;\n" +
+            "uniform float uBw;\n" +
+            "vec3 applyFx(vec3 rgb){\n" +
+            " if(uPop>0.5){\n" +
+            "  float luma=dot(rgb,vec3(0.299,0.587,0.114));\n" +
+            "  rgb=mix(vec3(luma),rgb,1.35);\n" +
+            "  rgb=clamp((rgb-0.5)*1.3+0.5,0.0,1.0);\n" +
+            " }\n" +
+            " if(uBw>0.5) rgb=vec3(dot(rgb,vec3(0.299,0.587,0.114)));\n" +
+            " return rgb;\n" +
+            "}\n";
+
+    static final String FRAG_EXT =
+            "#extension GL_OES_EGL_image_external : require\n" +
+            "precision mediump float;\n" +
+            "uniform samplerExternalOES sTexture;\n" +
+            "uniform float uGain;\n" +
+            "varying vec2 vTexCoord;\n" + FX_COLOR +
+            "void main(){\n" +
+            " vec4 c=texture2D(sTexture,vTexCoord);\n" +
+            " c.rgb=applyFx(clamp(c.rgb*uGain,0.0,1.0));\n" +
+            " gl_FragColor=c;\n" +
+            "}\n";
+
+    static final String FRAG_2D =
+            "precision mediump float;\n" +
+            "uniform sampler2D sTexture;\n" +
+            "uniform float uGain;\n" +
+            "varying vec2 vTexCoord;\n" + FX_COLOR +
+            "void main(){\n" +
+            " vec4 c=texture2D(sTexture,vTexCoord);\n" +
+            " c.rgb=applyFx(clamp(c.rgb*uGain,0.0,1.0));\n" +
+            " gl_FragColor=c;\n" +
+            "}\n";
+
     static final String FRAG_YUV =
             "precision mediump float;\n" +
             "uniform sampler2D sY;\n" +
             "uniform sampler2D sU;\n" +
             "uniform sampler2D sV;\n" +
-            "varying vec2 vTexCoord;\n" +
+            "varying vec2 vTexCoord;\n" + FX_COLOR +
             "void main(){\n" +
             " float y=texture2D(sY,vTexCoord).r;\n" +
             " float u=texture2D(sU,vTexCoord).r-0.5;\n" +
             " float v=texture2D(sV,vTexCoord).r-0.5;\n" +
-            " vec3 rgb=vec3(y+1.402*v, y-0.344136*u-0.714136*v, y+1.772*u);\n" +
-            " gl_FragColor=vec4(clamp(rgb,0.0,1.0),1.0);\n" +
+            " vec3 rgb=vec3(y+1.402*v,y-0.344136*u-0.714136*v,y+1.772*u);\n" +
+            " gl_FragColor=vec4(applyFx(clamp(rgb,0.0,1.0)),1.0);\n" +
             "}\n";
-
 }

@@ -25,7 +25,7 @@ public class GLView extends GLSurfaceView {
     private final LensPlayer[] players = new LensPlayer[2];
     private final LensMode[] slotModes = new LensMode[2];
 
-    public enum LensMode { REVERSE, DUBBUF_REVERSE, SLOW, FREEZE, STUTTER, FAST, SCRUB, REWIND, RAMREV, CREV, TAPE3, REVERSE3 }
+    public enum LensMode { REVERSE, DUBBUF_REVERSE, SLOW, FREEZE, STUTTER, FAST, SCRUB, REWIND, RAMREV, CREV, TAPE3, REVERSE3, REPLAY, MOLASSES, DOWNSHIFT }
 
     private volatile LensMode lensMode = LensMode.DUBBUF_REVERSE;
     private final boolean[] waitingForFirstTexture = new boolean[2];
@@ -126,11 +126,14 @@ public class GLView extends GLSurfaceView {
         TraceLog.i("Lens mode=" + mode);
     }
 
+    public static boolean isTapeMode(LensMode mode) {
+        return mode == LensMode.TAPE3 || mode == LensMode.REVERSE3 ||
+                mode == LensMode.REPLAY || mode == LensMode.MOLASSES ||
+                mode == LensMode.DOWNSHIFT;
+    }
+
     public LensMode getLensMode() { return lensMode; }
 
-    public void setPortraitOrientation(boolean portrait) {
-        if (renderer != null) renderer.setPortraitOrientation(portrait);
-    }
     public void requestCameraRender() { requestRender(); }
     public Surface getDecoderSurface(int slot) { return renderer.getDecoderSurface(slot); }
 
@@ -138,6 +141,21 @@ public class GLView extends GLSurfaceView {
         if (renderer == null) return;
         queueEvent(() -> {
             renderer.showDecoderSlot(0);
+            requestRender();
+        });
+    }
+
+    private boolean fxGuiSwapsAxes;
+
+    public void setFxOrientation(boolean swapsAxes) {
+        if (fxGuiSwapsAxes == swapsAxes) return;
+        fxGuiSwapsAxes = swapsAxes;
+        queueEvent(() -> { renderer.setFxOrientation(swapsAxes); requestRender(); });
+    }
+
+    public void setFx(boolean pop, boolean bw, boolean mirror) {
+        queueEvent(() -> {
+            renderer.setFx(pop, bw, mirror);
             requestRender();
         });
     }
