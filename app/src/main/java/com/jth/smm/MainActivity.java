@@ -111,9 +111,9 @@ public class MainActivity extends Activity {
     void configureTapeMode(Tape3 tape) {
         tape.setReverse3(glView.getLensMode() == GLView.LensMode.REVERSE3);
         tape.setManualPlayback(isManualTapeMode());
-        tape.setLfoPeriodMs(lfoPeriodMs);
-        if (glView.getLensMode() == GLView.LensMode.TAPE3) tape.setDelayMs(wobbleDelayMs);
-        tape.setLfoAmountMs(glView.getLensMode() == GLView.LensMode.TAPE3 ? lfoAmountMs : 0L);
+        if (glView.getLensMode() == GLView.LensMode.TAPE3)
+            tape.setWobble(wobbleLengthMs, wobbleDepthMs);
+        else tape.setLfoAmountMs(0L);
         downshiftDelayed = downshiftResetGesture = false;
     }
 
@@ -123,7 +123,7 @@ public class MainActivity extends Activity {
         else glView.showTape3Delay();
     }
 
-    long lfoPeriodMs = 2000L, lfoAmountMs = 250L, wobbleDelayMs = 1000L;
+    long wobbleLengthMs = 2000L, wobbleDepthMs = 1000L;
 
     Button slices2Button, slices4Button, slices6Button, slices8Button;
     Button fast1Button, fast15Button, fast2Button, fast3Button, fast4Button;
@@ -658,11 +658,11 @@ public class MainActivity extends Activity {
 
         glView =
                 new GLView(this);
-        captureFps = selectedCaptureFps;
+        captureFps = Tape3.CAPTURE_FPS;
         captureWidth = 1920;
         captureHeight = 1080;
         playbackFps = 60;
-        activeTestPreset = "TAPE3_1080P60";
+        activeTestPreset = "TAPE3_1080P120";
         glView.setLensMode(GLView.LensMode.TAPE3);
 
         root.addView(
@@ -823,6 +823,7 @@ public class MainActivity extends Activity {
             guiRoot.setLayoutParams(params);
         }
         guiRoot.setRotation(guiRotation);
+        if (glView != null) glView.setFxOrientation(GuiOrientation.swapsAxes(guiRotation));
     }
 
     @Override public void onBackPressed() {
@@ -1266,35 +1267,33 @@ public class MainActivity extends Activity {
     }
 
     void showModeChoices(View anchor) {
-        // Chunked, contiguous, manual; Downshift intentionally closes the list.
+        // Molasses and Downshift are retained internally but hidden for now.
         showChoicePopup(anchor,
-                new String[]{"SLOW", "FAST", "REVERSE", "STUTTER", "WOBBLE", "REPLAY", "MOLASSES", "DOWNSHIFT"},
+                new String[]{"SLOW", "FAST", "REVERSE", "STUTTER", "WOBBLE", "REPLAY"},
                 new Runnable[]{
                         () -> setLensMode(GLView.LensMode.SLOW),
                         () -> setLensMode(GLView.LensMode.FAST),
                         () -> setLensMode(GLView.LensMode.DUBBUF_REVERSE),
                         () -> setLensMode(GLView.LensMode.STUTTER),
                         () -> setLensMode(GLView.LensMode.TAPE3),
-                        () -> setLensMode(GLView.LensMode.REPLAY),
-                        () -> setLensMode(GLView.LensMode.MOLASSES),
-                        () -> setLensMode(GLView.LensMode.DOWNSHIFT)
+                        () -> setLensMode(GLView.LensMode.REPLAY)
                 },
                 new int[]{MODE_SLOW, MODE_FAST, MODE_REVERSE, MODE_STUTTER,
-                        MODE_CREV, MODE_REWIND, MODE_SLOW, MODE_REWIND});
+                        MODE_CREV, MODE_REWIND});
     }
 
     void showTimeChoices(View anchor) {
         GLView.LensMode m = glView.getLensMode();
         if (m == GLView.LensMode.TAPE3) {
-            long[] values = {0, 250, 500, 1000, 2000, 4000};
+            long[] values = WobbleTiming.PRESETS_MS;
             Runnable[] actions = new Runnable[values.length];
             String[] labels = new String[values.length];
             for (int i = 0; i < values.length; i++) {
                 final long value = values[i];
-                labels[i] = String.format(Locale.US, "Delay %.3f s", value / 1000.0);
+                labels[i] = String.format(Locale.US, "Length %.1f s", value / 1000.0);
                 actions[i] = () -> {
-                    wobbleDelayMs = value;
-                    if (tape3 != null) tape3.setDelayMs(value);
+                    wobbleLengthMs = value;
+                    if (tape3 != null) tape3.setWobble(wobbleLengthMs, wobbleDepthMs);
                     updateModeRail();
                 };
             }
@@ -1337,15 +1336,15 @@ public class MainActivity extends Activity {
     void showFactorChoices(View anchor) {
         GLView.LensMode m = glView.getLensMode();
         if (m == GLView.LensMode.TAPE3) {
-            long[] values = {0, 125, 250, 500, 1000, 2000};
+            long[] values = WobbleTiming.PRESETS_MS;
             Runnable[] actions = new Runnable[values.length];
             String[] labels = new String[values.length];
             for (int i = 0; i < values.length; i++) {
                 final long value = values[i];
-                labels[i] = "Amount " + String.format(Locale.US, "%.3f s", value / 1000.0);
+                labels[i] = String.format(Locale.US, "Depth %.1f s", value / 1000.0);
                 actions[i] = () -> {
-                    lfoAmountMs = value;
-                    if (tape3 != null) tape3.setLfoAmountMs(value);
+                    wobbleDepthMs = value;
+                    if (tape3 != null) tape3.setWobble(wobbleLengthMs, wobbleDepthMs);
                     updateModeRail();
                 };
             }
@@ -1433,14 +1432,18 @@ public class MainActivity extends Activity {
     }
 
     void showCameraChoices(View anchor) {
-        String exposure = captureHighSpeed ? "Exposure: Auto (HS)" :
+        boolean tapeMode = glView != null && GLView.isTapeMode(glView.getLensMode());
+        String exposure = captureHighSpeed || tapeMode ? "Exposure: Auto (HS)" :
                 !manualSensorAvailable ? "Exposure: Auto (camera limit)" :
                 manualExposure ? "Exposure: Manual" : "Exposure: Auto";
         showChoicePopup(anchor,
-                new String[]{"FPS: " + captureFps, exposure, "Shutter", "ISO: " + sensorIso, "Resolution"},
+                new String[]{tapeMode ? "FPS: 120 (locked)" : "FPS: " + captureFps, exposure, "Shutter", "ISO: " + sensorIso, "Resolution"},
                 new Runnable[]{
-                        () -> showChoicePopup(anchor, new String[]{"60 FPS", "120 FPS (HS: Auto)"},
-                                new Runnable[]{() -> setCaptureFps(60), () -> setCaptureFps(120)}),
+                        () -> {
+                            if (tapeMode) flashStatus("Tape3 is locked to 120 FPS", 1800);
+                            else showChoicePopup(anchor, new String[]{"60 FPS", "120 FPS (HS: Auto)"},
+                                    new Runnable[]{() -> setCaptureFps(60), () -> setCaptureFps(120)});
+                        },
                         () -> showChoicePopup(anchor, new String[]{"Manual exposure", "Auto exposure"},
                                 new Runnable[]{() -> setExposureMode(true), () -> setExposureMode(false)}),
                         () -> showShutterChoices(anchor),
@@ -1453,7 +1456,9 @@ public class MainActivity extends Activity {
     boolean canSetManualExposure() {
         if (cameraDevice == null) { flashStatus("Camera is not ready; choose FPS or resolution first.", 2500); return false; }
         if (captureHighSpeed || !manualSensorAvailable) {
-            flashStatus(captureHighSpeed ? "High-speed capture forces Auto exposure. Try 60 FPS for manual control." :
+            flashStatus(glView != null && GLView.isTapeMode(glView.getLensMode())
+                    ? "Tape3 stays at 120 FPS with Auto exposure." :
+                    captureHighSpeed ? "High-speed capture forces Auto exposure. Try 60 FPS for manual control." :
                     "This camera does not advertise manual sensor control.", 3500);
             return false;
         }
@@ -1629,8 +1634,8 @@ public class MainActivity extends Activity {
         if (m == GLView.LensMode.DOWNSHIFT)
             factor = downshiftFactor == 0.125f ? "1/8" : downshiftFactor == 0.5f ? "1/2" : "1/4";
         railView.setText(currentLensTitle().toUpperCase(Locale.US));
-        railTime.setText(wobble ? String.format(Locale.US, "DELAY %.3f s", wobbleDelayMs / 1000.0) : time.toUpperCase(Locale.US));
-        if (wobble) factor = "AMOUNT " + String.format(Locale.US, "%.3f s", lfoAmountMs / 1000.0);
+        railTime.setText(wobble ? String.format(Locale.US, "LENGTH %.1f s", wobbleLengthMs / 1000.0) : time.toUpperCase(Locale.US));
+        if (wobble) factor = String.format(Locale.US, "DEPTH %.1f s", wobbleDepthMs / 1000.0);
         railParam.setText(factor);
         int fxCount = (fxPop ? 1 : 0) + (fxBw ? 1 : 0) + (fxMirror ? 1 : 0);
         railFX.setText(fxCount == 0 ? "FX" : "FX " + fxCount);
@@ -2743,8 +2748,10 @@ public class MainActivity extends Activity {
         }
 
         try {
-            final int tape3CameraFps = captureFps;
-            final boolean highSpeed = captureHighSpeed;
+            if (captureFps != Tape3.CAPTURE_FPS || !captureHighSpeed)
+                throw new IllegalStateException("Tape3 requires a fixed 120 FPS high-speed session");
+            final int tape3CameraFps = Tape3.CAPTURE_FPS;
+            final boolean highSpeed = true;
             final Tape3 newTape3 =
                     new Tape3(captureWidth, captureHeight, tape3CameraFps, captureBitrate, glView.getDecoderSurface(0));
             configureTapeMode(newTape3);
@@ -2786,6 +2793,8 @@ public class MainActivity extends Activity {
                                 b.addTarget(previewSurface);
                                 b.addTarget(newTape3.getInputSurface());
                                 applyCaptureControls(b, highSpeed);
+                                b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE,
+                                        new Range<Integer>(Tape3.CAPTURE_FPS, Tape3.CAPTURE_FPS));
                                 applyCameraZoom(b, cameraZoom);
                                 newTape3.start();
                                 if (highSpeed) {
@@ -2805,7 +2814,7 @@ public class MainActivity extends Activity {
                         @Override public void onConfigureFailed(CameraCaptureSession s) {
                             TraceLog.i("TAPE3 camera session failed");
                             updateOverlay(
-                                    "Selected Tape3 camera stream failed. Try 60 fps or 720p.");
+                                    "Tape3 requires 120 FPS. Try 720p if 1080p is unsupported.");
                             if (tape3 == newTape3) tape3 = null;
                             newTape3.stopAndRelease();
                         }
@@ -3951,12 +3960,15 @@ public class MainActivity extends Activity {
     }
 
     String selectCaptureCamera(int width, int height, int fps, boolean apply) throws Exception {
+        boolean tapeMode = glView != null && GLView.isTapeMode(glView.getLensMode());
+        if (tapeMode && fps != Tape3.CAPTURE_FPS)
+            throw new IllegalArgumentException("Tape3 is locked to 120 FPS");
         Size size = new Size(width, height);
         for (String id : cameraManager.getCameraIdList()) {
             CameraCharacteristics c = cameraManager.getCameraCharacteristics(id);
             StreamConfigurationMap map = c.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
             if (map == null) continue;
-            boolean normal = supportsNormalFps(c, map, size, fps);
+            boolean normal = !tapeMode && supportsNormalFps(c, map, size, fps);
             boolean highSpeed = false;
             if (!normal && containsSize(map.getHighSpeedVideoSizes(), size)) {
                 Range<Integer>[] ranges = map.getHighSpeedVideoFpsRangesFor(size);
@@ -4213,7 +4225,7 @@ public class MainActivity extends Activity {
             running = false;
             glView.setLensMode(mode);
             if (isManualTapeMode()) glView.showRamLive();
-            captureFps = selectedCaptureFps;
+            captureFps = Tape3.CAPTURE_FPS;
             playbackFps = 60;
             activeTestPreset = "TAPE3_" + captureWidth + "X" + captureHeight + "_" + captureFps;
             updateControlButtons();
@@ -4529,6 +4541,10 @@ public class MainActivity extends Activity {
     }
 
     void setCaptureFps(int fps) {
+        if (glView != null && GLView.isTapeMode(glView.getLensMode())) {
+            flashStatus("Tape3 is locked to 120 FPS", 1800);
+            return;
+        }
         if (fps != 60 && fps != 120) return;
         try {
             if (cameraManager != null) selectCaptureCamera(captureWidth, captureHeight, fps, false);

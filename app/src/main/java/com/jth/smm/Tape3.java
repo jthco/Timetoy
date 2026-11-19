@@ -17,6 +17,7 @@ import java.nio.ByteBuffer;
  *                         -> 1 second Delay -> AVC decoder -> Surface
  */
 public final class Tape3 {
+    public static final int CAPTURE_FPS = 120;
     // NANO_TIMING_V1
     private static final int NANO_COUNT = 12;
     private static final String[] nanoNames = {
@@ -181,7 +182,7 @@ public final class Tape3 {
     private final long lfoStartNs = System.nanoTime();
 
     public void setLfoPeriodMs(long ms) {
-        lfoPeriodMs = Math.max(500L, Math.min(5000L, ms));
+        lfoPeriodMs = Math.max(500L, Math.min(8000L, ms));
     }
 
     public void setLfoAmountMs(long ms) {
@@ -195,12 +196,18 @@ public final class Tape3 {
     private long effectiveDelayUs() {
         long amount = lfoAmountMs;
         if (amount == 0L) return requestedDelayUs;
-        double elapsed = (System.nanoTime() - lfoStartNs) / 1000000.0;
-        double phase = (elapsed % lfoPeriodMs) / lfoPeriodMs;
-        double modulation = amount * 1000.0 * (1.0 - Math.abs(2.0 * phase - 1.0));
-        return requestedDelayUs + Math.round(modulation);
+        return requestedDelayUs + WobbleTiming.delayUs(
+                System.nanoTime() - lfoStartNs, lfoPeriodMs, amount);
     }
 
+
+    public void setWobble(long lengthMs, long depthMs) {
+        if (!WobbleTiming.isPreset(lengthMs) || !WobbleTiming.isPreset(depthMs))
+            throw new IllegalArgumentException("Wobble uses 0.5, 1, 2, 4, or 8 seconds");
+        requestedDelayUs = 0L;
+        lfoPeriodMs = lengthMs;
+        lfoAmountMs = depthMs;
+    }
 
     public void setDelayMs(long ms) {
         requestedDelayUs = Math.max(0L, Math.min(30000L, ms)) * 1000L;
@@ -275,6 +282,7 @@ public final class Tape3 {
             int bitrate,
             Surface decoderSurface
     ) {
+        if (fps != CAPTURE_FPS) throw new IllegalArgumentException("Tape3 is locked to 120 FPS");
         this.width = width;
         this.height = height;
         this.fps = fps;

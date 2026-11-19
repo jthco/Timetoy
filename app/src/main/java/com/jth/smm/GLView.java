@@ -145,6 +145,14 @@ public class GLView extends GLSurfaceView {
         });
     }
 
+    private boolean fxGuiSwapsAxes;
+
+    public void setFxOrientation(boolean swapsAxes) {
+        if (fxGuiSwapsAxes == swapsAxes) return;
+        fxGuiSwapsAxes = swapsAxes;
+        queueEvent(() -> { renderer.setFxOrientation(swapsAxes); requestRender(); });
+    }
+
     public void setFx(boolean pop, boolean bw, boolean mirror) {
         queueEvent(() -> {
             renderer.setFx(pop, bw, mirror);

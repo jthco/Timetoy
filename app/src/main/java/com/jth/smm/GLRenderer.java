@@ -95,6 +95,7 @@ public class GLRenderer implements GLSurfaceView.Renderer {
     int visibleDecoderSlot = -1;
     volatile float playbackGain = 1.0f;
     private boolean fxPop, fxBw, fxMirror;
+    private boolean fxGuiSwapsAxes;
     int screenW = 1, screenH = 1;
     int drawCount = 0, cameraFrameCount = 0;
     final int[] decoderFrameCounts = new int[2];
@@ -847,10 +848,15 @@ public class GLRenderer implements GLSurfaceView.Renderer {
         fxMirror = mirror;
     }
 
+    public void setFxOrientation(boolean swapsAxes) { fxGuiSwapsAxes = swapsAxes; }
+
     private void setFxUniforms(int program, boolean enabled) {
         GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uPop"), enabled && fxPop ? 1.0f : 0.0f);
         GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uBw"), enabled && fxBw ? 1.0f : 0.0f);
-        GLES20.glUniform1f(GLES20.glGetUniformLocation(program, "uMirror"), enabled && fxMirror ? 1.0f : 0.0f);
+        boolean mirror = enabled && fxMirror;
+        GLES20.glUniform2f(GLES20.glGetUniformLocation(program, "uMirror"),
+                mirror && !fxGuiSwapsAxes ? 1.0f : 0.0f,
+                mirror && fxGuiSwapsAxes ? 1.0f : 0.0f);
     }
 
     int make2dTexture() {
@@ -891,13 +897,12 @@ public class GLRenderer implements GLSurfaceView.Renderer {
             "attribute vec4 aPosition;\n" +
             "attribute vec4 aTexCoord;\n" +
             "uniform mat4 uTexMatrix;\n" +
-            "uniform float uMirror;\n" +
+            "uniform vec2 uMirror;\n" +
             "varying vec2 vTexCoord;\n" +
             "void main(){\n" +
             " gl_Position=aPosition;\n" +
-            " vec4 uv=aTexCoord;\n" +
-            " uv.x=mix(uv.x,1.0-uv.x,uMirror);\n" +
-            " vTexCoord=(uTexMatrix*uv).xy;\n" +
+            " gl_Position.xy*=vec2(1.0)-2.0*uMirror;\n" +
+            " vTexCoord=(uTexMatrix*aTexCoord).xy;\n" +
             "}\n";
 
     static final String FX_COLOR =

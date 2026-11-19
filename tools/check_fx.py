@@ -16,7 +16,7 @@ major=I();minor=I();assert egl('eglInitialize',U,[P,C.POINTER(I),C.POINTER(I)])(
 assert egl('eglBindAPI',U,[U])(0x30A0)
 attrs=(I*13)(0x3033,1,0x3040,4,0x3024,8,0x3023,8,0x3022,8,0x3021,8,0x3038)
 config=P();count=I();assert egl('eglChooseConfig',U,[P,C.POINTER(I),C.POINTER(P),I,C.POINTER(I)])(d,attrs,C.byref(config),1,C.byref(count)) and count.value
-surface=egl('eglCreatePbufferSurface',P,[P,P,C.POINTER(I)])(d,config,(I*5)(0x3057,2,0x3056,1,0x3038))
+surface=egl('eglCreatePbufferSurface',P,[P,P,C.POINTER(I)])(d,config,(I*5)(0x3057,2,0x3056,2,0x3038))
 context=egl('eglCreateContext',P,[P,P,P,C.POINTER(I)])(d,config,None,(I*3)(0x3098,2,0x3038))
 assert egl('eglMakeCurrent',U,[P,P,P,P])(d,surface,surface,context), 'EGL context failed'
 
@@ -46,21 +46,39 @@ for name,offset in [(b'aPosition',0),(b'aTexCoord',8)]:
 tex=U();gl('glGenTextures',None,[I,C.POINTER(U)])(1,C.byref(tex));gl('glActiveTexture',None,[U])(0x84C0);gl('glBindTexture',None,[U,U])(0x0DE1,tex.value)
 param=gl('glTexParameteri',None,[U,U,I])
 for key,value in [(0x2801,0x2600),(0x2800,0x2600),(0x2802,0x812F),(0x2803,0x812F)]:param(0x0DE1,key,value)
-pixels=(C.c_ubyte*8)(180,100,50,255,20,80,160,255)
-gl('glTexImage2D',None,[U,I,I,I,I,I,U,U,P])(0x0DE1,0,0x1908,2,1,0,0x1908,0x1401,pixels)
+pixels=(C.c_ubyte*16)(180,100,50,255,20,80,160,255,70,190,100,255,210,50,130,255)
+gl('glTexImage2D',None,[U,I,I,I,I,I,U,U,P])(0x0DE1,0,0x1908,2,2,0,0x1908,0x1401,pixels)
 gl('glUniform1i',None,[I,I])(uniform(p,b'sTexture'),0)
-gl('glViewport',None,[I,I,I,I])(0,0,2,1);gl('glDisable',None,[U])(0x0BD0)
-results={}
-for pop,bw,mirror in itertools.product([0,1],repeat=3):
-    for name,value in [(b'uPop',pop),(b'uBw',bw),(b'uMirror',mirror)]:setfloat(uniform(p,name),value)
-    gl('glDrawArrays',None,[U,I,I])(5,0,4);out=(C.c_ubyte*8)();gl('glReadPixels',None,[I,I,I,I,U,U,P])(0,0,2,1,0x1908,0x1401,out);results[pop,bw,mirror]=tuple(out)
-assert results[0,0,0]==tuple(pixels),results[0,0,0]
-for pop,bw in itertools.product([0,1],repeat=2):
-    original=results[pop,bw,0];assert results[pop,bw,1]==original[4:]+original[:4]
-    if bw:
-        for pixel in [original[:4],original[4:]]:assert max(pixel[:3])-min(pixel[:3])<=1
-assert results[1,0,0]!=results[0,0,0]
-# The off state is re-rendered from the same source after all combinations.
-for n in [b'uPop',b'uBw',b'uMirror']:setfloat(uniform(p,n),0)
-gl('glDrawArrays',None,[U,I,I])(5,0,4);out=(C.c_ubyte*8)();gl('glReadPixels',None,[I,I,I,I,U,U,P])(0,0,2,1,0x1908,0x1401,out);assert tuple(out)==tuple(pixels)
-print('All eight toggle combinations pass pixel checks; toggling off restores original pixels')
+gl('glViewport',None,[I,I,I,I])(0,0,2,2);gl('glDisable',None,[U])(0x0BD0)
+setmirror=gl('glUniform2f',None,[I,F,F])
+read=gl('glReadPixels',None,[I,I,I,I,U,U,P])
+# Identity, producer Y inversion, and a producer 90-degree turn. Asymmetric
+# corners distinguish a reflection from a 180-degree rotation or identity.
+matrices=[identity,
+          (F*16)(1,0,0,0,0,-1,0,0,0,0,1,0,0,1,0,1),
+          (F*16)(0,1,0,0,-1,0,0,0,0,0,1,0,1,0,0,1)]
+for matrix in matrices:
+    gl('glUniformMatrix4fv',None,[I,I,U,C.POINTER(F)])(uniform(p,b'uTexMatrix'),1,0,matrix)
+    results={}
+    for pop,bw,mirror in itertools.product([0,1],repeat=3):
+        for name,value in [(b'uPop',pop),(b'uBw',bw)]:setfloat(uniform(p,name),value)
+        for portrait in [False,True]:
+            setmirror(uniform(p,b'uMirror'),mirror and not portrait,mirror and portrait)
+            gl('glDrawArrays',None,[U,I,I])(5,0,4)
+            out=(C.c_ubyte*16)();read(0,0,2,2,0x1908,0x1401,out)
+            results[pop,bw,mirror,portrait]=[tuple(out[i:i+4]) for i in range(0,16,4)]
+    for pop,bw in itertools.product([0,1],repeat=2):
+        original=results[pop,bw,0,False]
+        assert results[pop,bw,1,False]==[original[i] for i in [1,0,3,2]], 'Landscape mirror failed'
+        # In portrait the GUI's horizontal direction is the fixed video
+        # window's Y axis; reflect that axis without changing the other one.
+        assert results[pop,bw,1,True]==[original[i] for i in [2,3,0,1]], 'Portrait mirror failed'
+        if bw:
+            for pixel in original:assert max(pixel[:3])-min(pixel[:3])<=1
+    assert results[1,0,0,False]!=results[0,0,0,False]
+    for n in [b'uPop',b'uBw']:setfloat(uniform(p,n),0)
+    setmirror(uniform(p,b'uMirror'),0,0)
+    gl('glDrawArrays',None,[U,I,I])(5,0,4)
+    out=(C.c_ubyte*16)();read(0,0,2,2,0x1908,0x1401,out)
+    assert [tuple(out[i:i+4]) for i in range(0,16,4)]==results[0,0,0,False]
+print('All FX combinations passed in portrait/landscape with identity, inverted, and rotated producer transforms')
